@@ -397,7 +397,6 @@ _espvm_install() {
     local encoded_version=$(_espvm_encode_version "$version")
     local sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
     local version_dir="$sdk_dir/$encoded_version"
-    local bare_dir="$(_espvm_get_bare_dir "$sdk")"
 
     if [[ -d "$version_dir" ]]; then
         if [[ $force -eq 1 ]]; then
@@ -413,72 +412,11 @@ _espvm_install() {
 
     echo "Installing $sdk_name $version..."
 
-    # Initialize bare repo if needed
-    _espvm_init_bare "$sdk" || return 1
-
-    # Fetch the specific tag/branch
-    echo "Fetching $version..."
-    # Try as tag first, then as branch
-    if ! git -C "$bare_dir" fetch origin tag "$version" --no-tags 2>/dev/null; then
-        echo "Not a tag, trying as branch..."
-        git -C "$bare_dir" fetch origin "$version"
-        if [[ $? -ne 0 ]]; then
-            _espvm_red "Error: Failed to fetch $version (does this version exist?)"
-            return 1
-        fi
-    fi
-
-    # Create worktree (prune stale ones first)
-    echo "Creating worktree for $version..."
-    mkdir -p "$sdk_dir"
-    git -C "$bare_dir" worktree prune 2>/dev/null
-    if ! git -C "$bare_dir" worktree add "$version_dir" "$version" 2>/dev/null; then
-        # Worktree might exist in git but directory is gone/stale
-        _espvm_yellow "Cleaning up stale worktree reference..."
-        git -C "$bare_dir" worktree remove "$version_dir" --force 2>/dev/null
-        git -C "$bare_dir" worktree prune 2>/dev/null
-        git -C "$bare_dir" worktree add "$version_dir" "$version"
-        if [[ $? -ne 0 ]]; then
-            _espvm_red "Error: Failed to create worktree"
-            return 1
-        fi
-    fi
-
-    # Initialize submodules - different approach for matter vs idf
+    # Different installation approach for IDF vs Matter
     if [[ "$sdk" == "matter" ]]; then
-        # ESP-Matter requires ESP-IDF to be active
-        if [[ -z "$IDF_PATH" ]]; then
-            _espvm_red "Error: ESP-IDF must be active before installing ESP-Matter"
-            echo "Run 'espvm idf use <version>' first"
-            # Clean up the worktree we just created
-            git -C "$bare_dir" worktree remove "$version_dir" --force 2>/dev/null
-            return 1
-        fi
-
-        echo "Initializing submodules (shallow)..."
-        git -C "$version_dir" submodule update --init --depth 1
-        if [[ $? -ne 0 ]]; then
-            _espvm_red "Error: Failed to initialize submodules"
-            return 1
-        fi
-
-        # Use checkout_submodules.py for connectedhomeip (platform-specific)
-        local chip_dir="$version_dir/connectedhomeip/connectedhomeip"
-        if [[ -f "$chip_dir/scripts/checkout_submodules.py" ]]; then
-            echo "Checking out CHIP submodules for esp32 linux..."
-            if ! (cd "$chip_dir" && python3 scripts/checkout_submodules.py --platform esp32 linux --shallow); then
-                _espvm_red "Error: Failed to checkout CHIP submodules"
-                return 1
-            fi
-        fi
+        _espvm_install_matter "$version" "$version_dir" || return 1
     else
-        # ESP-IDF: regular recursive submodule update
-        echo "Initializing submodules..."
-        git -C "$version_dir" submodule update --init --recursive --jobs 8 --depth 1
-        if [[ $? -ne 0 ]]; then
-            _espvm_red "Error: Failed to initialize submodules"
-            return 1
-        fi
+        _espvm_install_idf "$version" "$version_dir" || return 1
     fi
 
     # Install tools if needed
@@ -489,6 +427,99 @@ _espvm_install() {
 
     # Clear the flag
     _ESPVM_WORKTREE_FLAG=""
+    return 0
+}
+
+# Install ESP-IDF using worktree (efficient disk usage)
+_espvm_install_idf() {
+    local version="$1"
+    local version_dir="$2"
+    local bare_dir="$(_espvm_get_bare_dir "idf")"
+    local sdk_dir="$(dirname "$version_dir")"
+
+    # Initialize bare repo if needed
+    _espvm_init_bare "idf" || return 1
+
+    # Fetch the specific tag/branch
+    echo "Fetching $version..."
+    if ! git -C "$bare_dir" fetch origin tag "$version" --no-tags 2>/dev/null; then
+        echo "Not a tag, trying as branch..."
+        git -C "$bare_dir" fetch origin "$version"
+        if [[ $? -ne 0 ]]; then
+            _espvm_red "Error: Failed to fetch $version (does this version exist?)"
+            return 1
+        fi
+    fi
+
+    # Create worktree
+    echo "Creating worktree for $version..."
+    mkdir -p "$sdk_dir"
+    git -C "$bare_dir" worktree prune 2>/dev/null
+    if ! git -C "$bare_dir" worktree add "$version_dir" "$version" 2>/dev/null; then
+        _espvm_yellow "Cleaning up stale worktree reference..."
+        git -C "$bare_dir" worktree remove "$version_dir" --force 2>/dev/null
+        git -C "$bare_dir" worktree prune 2>/dev/null
+        git -C "$bare_dir" worktree add "$version_dir" "$version"
+        if [[ $? -ne 0 ]]; then
+            _espvm_red "Error: Failed to create worktree"
+            return 1
+        fi
+    fi
+
+    # Initialize submodules
+    echo "Initializing submodules..."
+    git -C "$version_dir" submodule update --init --recursive --jobs 8 --depth 1
+    if [[ $? -ne 0 ]]; then
+        _espvm_red "Error: Failed to initialize submodules"
+        return 1
+    fi
+
+    return 0
+}
+
+# Install ESP-Matter using clone (worktree doesn't work well with its submodules)
+_espvm_install_matter() {
+    local version="$1"
+    local version_dir="$2"
+    local sdk_dir="$(dirname "$version_dir")"
+    local repo_url="$(_espvm_get_repo_url "matter")"
+
+    # ESP-Matter requires ESP-IDF to be active
+    if [[ -z "$IDF_PATH" ]]; then
+        _espvm_red "Error: ESP-IDF must be active before installing ESP-Matter"
+        echo "Run 'espvm idf use <version>' first"
+        return 1
+    fi
+
+    mkdir -p "$sdk_dir"
+
+    # Clone with specific branch/tag
+    echo "Cloning $version..."
+    if ! git clone --depth 1 --branch "$version" "$repo_url" "$version_dir" 2>/dev/null; then
+        _espvm_red "Error: Failed to clone $version (does this version exist?)"
+        return 1
+    fi
+
+    # Initialize submodules (shallow)
+    echo "Initializing submodules..."
+    git -C "$version_dir" submodule update --init --depth 1
+    if [[ $? -ne 0 ]]; then
+        _espvm_red "Error: Failed to initialize submodules"
+        rm -rf "$version_dir"
+        return 1
+    fi
+
+    # Use checkout_submodules.py for connectedhomeip (platform-specific)
+    local chip_dir="$version_dir/connectedhomeip/connectedhomeip"
+    if [[ -f "$chip_dir/scripts/checkout_submodules.py" ]]; then
+        echo "Checking out CHIP submodules for esp32 linux..."
+        if ! (cd "$chip_dir" && python3 scripts/checkout_submodules.py --platform esp32 linux --shallow); then
+            _espvm_red "Error: Failed to checkout CHIP submodules"
+            rm -rf "$version_dir"
+            return 1
+        fi
+    fi
+
     return 0
 }
 
@@ -731,7 +762,6 @@ _espvm_remove() {
     local encoded_version=$(_espvm_encode_version "$version")
     local sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
     local version_dir="$sdk_dir/$encoded_version"
-    local bare_dir="$(_espvm_get_bare_dir "$sdk")"
     local current_file="$(_espvm_get_current_file "$sdk")"
 
     if [[ ! -d "$version_dir" ]]; then
@@ -751,18 +781,19 @@ _espvm_remove() {
 
     echo "Removing $sdk_name $version..."
 
-    # Ensure bare repo exists for worktree operations
-    _espvm_ensure_bare "$sdk"
-
-    # Remove worktree
-    git -C "$bare_dir" worktree remove "$version_dir" --force 2>/dev/null
-    if [[ $? -ne 0 ]]; then
-        # Fallback to manual removal
+    if [[ "$sdk" == "idf" ]]; then
+        # IDF uses worktrees
+        local bare_dir="$(_espvm_get_bare_dir "$sdk")"
+        _espvm_ensure_bare "$sdk"
+        git -C "$bare_dir" worktree remove "$version_dir" --force 2>/dev/null
+        if [[ $? -ne 0 ]]; then
+            rm -rf "$version_dir"
+        fi
+        git -C "$bare_dir" worktree prune 2>/dev/null
+    else
+        # Matter uses regular clones
         rm -rf "$version_dir"
     fi
-
-    # Prune worktrees
-    git -C "$bare_dir" worktree prune 2>/dev/null
 
     # Clear current if removed
     if [[ "$encoded_version" == "$current" ]]; then
@@ -788,7 +819,6 @@ _espvm_update() {
     local encoded_version=$(_espvm_encode_version "$version")
     local sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
     local version_dir="$sdk_dir/$encoded_version"
-    local bare_dir="$(_espvm_get_bare_dir "$sdk")"
 
     if [[ ! -d "$version_dir" ]]; then
         _espvm_red "Error: $sdk_name $version is not installed"
@@ -797,27 +827,55 @@ _espvm_update() {
 
     echo "Updating $sdk_name $version..."
 
-    # Ensure bare repo exists
-    _espvm_ensure_bare "$sdk" || return 1
+    if [[ "$sdk" == "idf" ]]; then
+        # IDF uses worktrees with bare repo
+        local bare_dir="$(_espvm_get_bare_dir "$sdk")"
+        _espvm_ensure_bare "$sdk" || return 1
 
-    # Fetch latest
-    git -C "$bare_dir" fetch origin tag "$version" --force 2>/dev/null || \
-        git -C "$bare_dir" fetch origin "$version" --force
-    if [[ $? -ne 0 ]]; then
-        _espvm_red "Error: Failed to fetch updates"
-        return 1
-    fi
+        git -C "$bare_dir" fetch origin tag "$version" --force 2>/dev/null || \
+            git -C "$bare_dir" fetch origin "$version" --force
+        if [[ $? -ne 0 ]]; then
+            _espvm_red "Error: Failed to fetch updates"
+            return 1
+        fi
 
-    # Reset worktree to the tag
-    git -C "$version_dir" checkout "$version"
-    git -C "$version_dir" reset --hard "$version"
+        git -C "$version_dir" checkout "$version"
+        git -C "$version_dir" reset --hard "$version"
 
-    # Update submodules
-    echo "Updating submodules..."
-    git -C "$version_dir" submodule update --init --recursive
-    if [[ $? -ne 0 ]]; then
-        _espvm_red "Error: Failed to update submodules"
-        return 1
+        echo "Updating submodules..."
+        git -C "$version_dir" submodule update --init --recursive
+        if [[ $? -ne 0 ]]; then
+            _espvm_red "Error: Failed to update submodules"
+            return 1
+        fi
+    else
+        # Matter uses regular clones - fetch and reset
+        git -C "$version_dir" fetch --depth 1 origin tag "$version" --force 2>/dev/null || \
+            git -C "$version_dir" fetch --depth 1 origin "$version" --force
+        if [[ $? -ne 0 ]]; then
+            _espvm_red "Error: Failed to fetch updates"
+            return 1
+        fi
+
+        git -C "$version_dir" checkout "$version"
+        git -C "$version_dir" reset --hard "$version"
+
+        echo "Updating submodules..."
+        git -C "$version_dir" submodule update --init --depth 1
+        if [[ $? -ne 0 ]]; then
+            _espvm_red "Error: Failed to update submodules"
+            return 1
+        fi
+
+        # Re-run checkout_submodules.py for connectedhomeip
+        local chip_dir="$version_dir/connectedhomeip/connectedhomeip"
+        if [[ -f "$chip_dir/scripts/checkout_submodules.py" ]]; then
+            echo "Updating CHIP submodules..."
+            if ! (cd "$chip_dir" && python3 scripts/checkout_submodules.py --platform esp32 linux --shallow); then
+                _espvm_red "Error: Failed to update CHIP submodules"
+                return 1
+            fi
+        fi
     fi
 
     # Check and install tools if needed
@@ -995,6 +1053,10 @@ _espvm_sdk_command() {
             _espvm_current "$sdk"
             ;;
         repair)
+            if [[ "$sdk" == "matter" ]]; then
+                _espvm_yellow "Repair not needed for Matter (uses regular clones)"
+                return 0
+            fi
             _espvm_ensure_bare "$sdk" || return 1
             _espvm_repair_worktrees "$sdk"
             _espvm_green "Worktree links repaired"
@@ -1095,6 +1157,10 @@ espvm() {
             _espvm_current "$sdk"
             ;;
         repair)
+            if [[ "$sdk" == "matter" ]]; then
+                _espvm_yellow "Repair not needed for Matter (uses regular clones)"
+                return 0
+            fi
             _espvm_ensure_bare "$sdk" || return 1
             _espvm_repair_worktrees "$sdk"
             _espvm_green "Worktree links repaired"
