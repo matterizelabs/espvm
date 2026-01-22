@@ -444,12 +444,41 @@ _espvm_install() {
         fi
     fi
 
-    # Initialize submodules (shallow clone + parallel for speed)
-    echo "Initializing submodules..."
-    git -C "$version_dir" submodule update --init --recursive --jobs 8 --depth 1
-    if [[ $? -ne 0 ]]; then
-        _espvm_red "Error: Failed to initialize submodules"
-        return 1
+    # Initialize submodules - different approach for matter vs idf
+    if [[ "$sdk" == "matter" ]]; then
+        # ESP-Matter requires ESP-IDF to be active
+        if [[ -z "$IDF_PATH" ]]; then
+            _espvm_red "Error: ESP-IDF must be active before installing ESP-Matter"
+            echo "Run 'espvm idf use <version>' first"
+            # Clean up the worktree we just created
+            git -C "$bare_dir" worktree remove "$version_dir" --force 2>/dev/null
+            return 1
+        fi
+
+        echo "Initializing submodules (shallow)..."
+        git -C "$version_dir" submodule update --init --depth 1
+        if [[ $? -ne 0 ]]; then
+            _espvm_red "Error: Failed to initialize submodules"
+            return 1
+        fi
+
+        # Use checkout_submodules.py for connectedhomeip (platform-specific)
+        local chip_dir="$version_dir/connectedhomeip/connectedhomeip"
+        if [[ -f "$chip_dir/scripts/checkout_submodules.py" ]]; then
+            echo "Checking out CHIP submodules for esp32 linux..."
+            if ! (cd "$chip_dir" && python3 scripts/checkout_submodules.py --platform esp32 linux --shallow); then
+                _espvm_red "Error: Failed to checkout CHIP submodules"
+                return 1
+            fi
+        fi
+    else
+        # ESP-IDF: regular recursive submodule update
+        echo "Initializing submodules..."
+        git -C "$version_dir" submodule update --init --recursive --jobs 8 --depth 1
+        if [[ $? -ne 0 ]]; then
+            _espvm_red "Error: Failed to initialize submodules"
+            return 1
+        fi
     fi
 
     # Install tools if needed
@@ -506,6 +535,13 @@ _espvm_use() {
         fi
     fi
 
+    # ESP-Matter requires ESP-IDF to be active
+    if [[ "$sdk" == "matter" && -z "$IDF_PATH" ]]; then
+        _espvm_red "Error: ESP-IDF must be active before using ESP-Matter"
+        echo "Run 'espvm idf use <version>' first"
+        return 1
+    fi
+
     if [[ ! -f "$version_dir/export.sh" ]]; then
         _espvm_red "Error: export.sh not found in $version_dir"
         return 1
@@ -517,18 +553,28 @@ _espvm_use() {
         git -C "$bare_dir" worktree repair "$version_dir" 2>/dev/null
     fi
 
-    # Clear previous IDF environment to avoid conflicts
-    if [[ -n "$IDF_PATH" ]]; then
-        # Remove old IDF paths from PATH
-        local old_idf="$IDF_PATH"
-        PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "$old_idf" | tr '\n' ':')
-        PATH="${PATH%:}"
-        # Also remove tool paths
-        [[ -n "$IDF_TOOLS_PATH" ]] && PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "$IDF_TOOLS_PATH" | tr '\n' ':')
-        PATH="${PATH%:}"
+    # Clear previous environment to avoid conflicts
+    if [[ "$sdk" == "idf" ]]; then
+        # Switching IDF versions - clear IDF environment
+        if [[ -n "$IDF_PATH" ]]; then
+            local old_idf="$IDF_PATH"
+            PATH=$(echo "$PATH" | tr ':' '\n' | grep -vF "$old_idf" | tr '\n' ':')
+            PATH="${PATH%:}"
+            [[ -n "$IDF_TOOLS_PATH" ]] && PATH=$(echo "$PATH" | tr ':' '\n' | grep -vF "$IDF_TOOLS_PATH" | tr '\n' ':')
+            PATH="${PATH%:}"
+        fi
+        unset IDF_PATH IDF_PYTHON_ENV_PATH IDF_TOOLS_PATH IDF_COMPONENT_MANAGER_URL
+        unset OPENOCD_SCRIPTS ESP_IDF_VERSION ESP_ROM_ELF_DIR
+        # Also clear matter env since it depends on IDF
+        unset ESP_MATTER_PATH
+    else
+        # Switching Matter versions - preserve IDF, clear Matter
+        if [[ -n "$ESP_MATTER_PATH" ]]; then
+            PATH=$(echo "$PATH" | tr ':' '\n' | grep -vF "$ESP_MATTER_PATH" | tr '\n' ':')
+            PATH="${PATH%:}"
+        fi
+        unset ESP_MATTER_PATH
     fi
-    unset IDF_PATH IDF_PYTHON_ENV_PATH IDF_TOOLS_PATH IDF_COMPONENT_MANAGER_URL
-    unset OPENOCD_SCRIPTS ESP_IDF_VERSION ESP_ROM_ELF_DIR
 
     # Activate the version
     echo -n "Activating $sdk_name $version... "
@@ -551,8 +597,14 @@ _espvm_use() {
             return 1
         fi
     else
-        # Verify activation
-        if [[ "$IDF_PATH" != "$version_dir" ]] || ! command -v idf.py &>/dev/null; then
+        # Verify activation - different checks for IDF vs Matter
+        local activation_ok=0
+        if [[ "$sdk" == "idf" ]]; then
+            [[ "$IDF_PATH" == "$version_dir" ]] && command -v idf.py &>/dev/null && activation_ok=1
+        else
+            [[ "$ESP_MATTER_PATH" == "$version_dir" ]] && activation_ok=1
+        fi
+        if [[ $activation_ok -eq 0 ]]; then
             _espvm_red "failed"
             if [[ $just_installed -eq 1 ]]; then
                 return 1
@@ -600,8 +652,14 @@ _espvm_list() {
             local ver=$(_espvm_decode_version "$encoded_ver")
             local ver_dir="${dir%/}"
             found=1
-            # Check if actually active by comparing IDF_PATH
-            if [[ "$IDF_PATH" == "$ver_dir" ]]; then
+            # Check if actually active
+            local is_active=0
+            if [[ "$sdk" == "idf" && "$IDF_PATH" == "$ver_dir" ]]; then
+                is_active=1
+            elif [[ "$sdk" == "matter" && "$ESP_MATTER_PATH" == "$ver_dir" ]]; then
+                is_active=1
+            fi
+            if [[ $is_active -eq 1 ]]; then
                 _espvm_green "* $ver (active)"
             else
                 echo "  $ver"
@@ -781,6 +839,8 @@ _espvm_current() {
         echo "Current $sdk_name version: $current"
         if [[ "$sdk" == "idf" && -n "$IDF_PATH" ]]; then
             echo "IDF_PATH: $IDF_PATH"
+        elif [[ "$sdk" == "matter" && -n "$ESP_MATTER_PATH" ]]; then
+            echo "ESP_MATTER_PATH: $ESP_MATTER_PATH"
         fi
     else
         echo "No $sdk_name version currently active"

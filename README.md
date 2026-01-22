@@ -23,7 +23,8 @@ espvm idf use 5.4.1          # Activate in current shell
 espvm idf list               # List installed versions
 espvm idf list-remote        # List available tags/branches
 
-espvm matter install 1.0     # Install ESP-Matter
+espvm idf use 5.4.1          # ESP-IDF must be active first
+espvm matter install 1.0     # Install ESP-Matter (uses shallow submodules)
 espvm matter use 1.0
 
 espvm config                 # Show configuration
