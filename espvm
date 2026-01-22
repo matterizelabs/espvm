@@ -168,6 +168,22 @@ _espvm_normalize_version() {
     fi
 }
 
+# Encode version for filesystem (replace / with -)
+_espvm_encode_version() {
+    echo "${1//\//-}"
+}
+
+# Decode version from filesystem (replace - with / for known patterns)
+_espvm_decode_version() {
+    local ver="$1"
+    # Only decode release-* pattern back to release/*
+    if [[ "$ver" == release-* ]]; then
+        echo "${ver/release-/release\/}"
+    else
+        echo "$ver"
+    fi
+}
+
 # Initialize the bare repository if it doesn't exist
 _espvm_init_bare() {
     local sdk="$1"
@@ -272,8 +288,9 @@ _espvm_install() {
 
     local sdk_name="${_ESPVM_SDKS[$sdk]}"
     version=$(_espvm_normalize_version "$version")
+    local encoded_version=$(_espvm_encode_version "$version")
     local sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
-    local version_dir="$sdk_dir/$version"
+    local version_dir="$sdk_dir/$encoded_version"
     local bare_dir="$(_espvm_get_bare_dir "$sdk")"
 
     if [[ -d "$version_dir" ]]; then
@@ -345,8 +362,9 @@ _espvm_use() {
 
     local sdk_name="${_ESPVM_SDKS[$sdk]}"
     version=$(_espvm_normalize_version "$version")
+    local encoded_version=$(_espvm_encode_version "$version")
     local sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
-    local version_dir="$sdk_dir/$version"
+    local version_dir="$sdk_dir/$encoded_version"
     local current_file="$(_espvm_get_current_file "$sdk")"
 
     local just_installed=0
@@ -388,9 +406,9 @@ _espvm_use() {
         source "$version_dir/export.sh"
     fi
 
-    # Save current version
+    # Save current version (encoded for consistency)
     mkdir -p "$(dirname "$current_file")"
-    echo "$version" > "$current_file"
+    echo "$encoded_version" > "$current_file"
 
     _espvm_green "Now using $sdk_name $version"
     return 0
@@ -417,11 +435,12 @@ _espvm_list() {
     local found=0
     for dir in "$sdk_dir"/*/; do
         if [[ -d "$dir" ]]; then
-            local ver=$(basename "$dir")
+            local encoded_ver=$(basename "$dir")
             # Skip hidden directories
-            [[ "$ver" == .* ]] && continue
+            [[ "$encoded_ver" == .* ]] && continue
+            local ver=$(_espvm_decode_version "$encoded_ver")
             found=1
-            if [[ "$ver" == "$current" ]]; then
+            if [[ "$encoded_ver" == "$current" ]]; then
                 _espvm_green "* $ver (active)"
             else
                 echo "  $ver"
@@ -490,8 +509,9 @@ _espvm_remove() {
 
     local sdk_name="${_ESPVM_SDKS[$sdk]}"
     version=$(_espvm_normalize_version "$version")
+    local encoded_version=$(_espvm_encode_version "$version")
     local sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
-    local version_dir="$sdk_dir/$version"
+    local version_dir="$sdk_dir/$encoded_version"
     local bare_dir="$(_espvm_get_bare_dir "$sdk")"
     local current_file="$(_espvm_get_current_file "$sdk")"
 
@@ -506,7 +526,7 @@ _espvm_remove() {
         current=$(cat "$current_file")
     fi
 
-    if [[ "$version" == "$current" ]]; then
+    if [[ "$encoded_version" == "$current" ]]; then
         _espvm_yellow "Warning: $version is currently active"
     fi
 
@@ -523,7 +543,7 @@ _espvm_remove() {
     git -C "$bare_dir" worktree prune 2>/dev/null
 
     # Clear current if removed
-    if [[ "$version" == "$current" ]]; then
+    if [[ "$encoded_version" == "$current" ]]; then
         rm -f "$current_file"
     fi
 
@@ -543,8 +563,9 @@ _espvm_update() {
 
     local sdk_name="${_ESPVM_SDKS[$sdk]}"
     version=$(_espvm_normalize_version "$version")
+    local encoded_version=$(_espvm_encode_version "$version")
     local sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
-    local version_dir="$sdk_dir/$version"
+    local version_dir="$sdk_dir/$encoded_version"
     local bare_dir="$(_espvm_get_bare_dir "$sdk")"
 
     if [[ ! -d "$version_dir" ]]; then
@@ -588,7 +609,8 @@ _espvm_current() {
     local current_file="$(_espvm_get_current_file "$sdk")"
 
     if [[ -f "$current_file" ]]; then
-        local current=$(cat "$current_file")
+        local encoded_current=$(cat "$current_file")
+        local current=$(_espvm_decode_version "$encoded_current")
         echo "Current $sdk_name version: $current"
         if [[ "$sdk" == "idf" && -n "$IDF_PATH" ]]; then
             echo "IDF_PATH: $IDF_PATH"
