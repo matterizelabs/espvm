@@ -1,0 +1,424 @@
+#!/bin/bash
+# espvm - ESP-IDF Version Manager
+# Manage multiple ESP-IDF versions using git worktree
+
+ESPVM_DIR="${ESPVM_DIR:-$HOME/.espressif/esp-versions}"
+ESPVM_REPO="https://github.com/espressif/esp-idf.git"
+ESPVM_BARE_DIR="$ESPVM_DIR/.bare"
+ESPVM_CURRENT_FILE="$ESPVM_DIR/.current"
+
+# Colors for output
+_espvm_red() { echo -e "\033[0;31m$1\033[0m"; }
+_espvm_green() { echo -e "\033[0;32m$1\033[0m"; }
+_espvm_yellow() { echo -e "\033[0;33m$1\033[0m"; }
+_espvm_blue() { echo -e "\033[0;34m$1\033[0m"; }
+
+# Normalize version string (add 'v' prefix if missing)
+_espvm_normalize_version() {
+    local version="$1"
+    if [[ "$version" != v* ]]; then
+        echo "v$version"
+    else
+        echo "$version"
+    fi
+}
+
+# Check if a command exists
+_espvm_command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Ensure prerequisites are met
+_espvm_check_prereqs() {
+    if ! _espvm_command_exists git; then
+        _espvm_red "Error: git is not installed"
+        return 1
+    fi
+    if ! _espvm_command_exists python3; then
+        _espvm_red "Error: python3 is not installed"
+        return 1
+    fi
+    return 0
+}
+
+# Initialize the bare repository if it doesn't exist
+_espvm_init_bare() {
+    if [[ ! -d "$ESPVM_BARE_DIR" ]]; then
+        echo "Initializing ESP-IDF repository (first-time setup)..."
+        mkdir -p "$ESPVM_DIR"
+        git clone --bare "$ESPVM_REPO" "$ESPVM_BARE_DIR"
+        if [[ $? -ne 0 ]]; then
+            _espvm_red "Error: Failed to clone ESP-IDF repository"
+            return 1
+        fi
+        # Configure the bare repo for worktrees
+        git -C "$ESPVM_BARE_DIR" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+        _espvm_green "Repository initialized successfully"
+    fi
+    return 0
+}
+
+# Check if tools are installed for a version
+_espvm_check_tools() {
+    local version_dir="$1"
+    if [[ ! -f "$version_dir/tools/idf_tools.py" ]]; then
+        return 1
+    fi
+    # Use IDF_PATH to help idf_tools.py find the right config
+    IDF_PATH="$version_dir" python3 "$version_dir/tools/idf_tools.py" check >/dev/null 2>&1
+    return $?
+}
+
+# Run install.sh if needed
+_espvm_maybe_install() {
+    local version_dir="$1"
+    local version="$2"
+
+    if _espvm_check_tools "$version_dir"; then
+        _espvm_green "Tools already installed for $version"
+    else
+        _espvm_yellow "Installing tools for $version..."
+        "$version_dir/install.sh"
+        if [[ $? -ne 0 ]]; then
+            _espvm_red "Error: install.sh failed"
+            return 1
+        fi
+        _espvm_green "Tools installed successfully"
+    fi
+    return 0
+}
+
+# Install a specific version
+espvm_install() {
+    local version="$1"
+    if [[ -z "$version" ]]; then
+        _espvm_red "Usage: espvm install <version>"
+        return 1
+    fi
+
+    _espvm_check_prereqs || return 1
+
+    version=$(_espvm_normalize_version "$version")
+    local version_dir="$ESPVM_DIR/$version"
+
+    if [[ -d "$version_dir" ]]; then
+        _espvm_yellow "$version is already installed"
+        return 0
+    fi
+
+    echo "Installing ESP-IDF $version..."
+
+    # Initialize bare repo if needed
+    _espvm_init_bare || return 1
+
+    # Fetch the specific tag
+    echo "Fetching $version..."
+    git -C "$ESPVM_BARE_DIR" fetch origin tag "$version" --no-tags
+    if [[ $? -ne 0 ]]; then
+        _espvm_red "Error: Failed to fetch $version (does this version exist?)"
+        return 1
+    fi
+
+    # Create worktree
+    echo "Creating worktree for $version..."
+    git -C "$ESPVM_BARE_DIR" worktree add "$version_dir" "$version"
+    if [[ $? -ne 0 ]]; then
+        _espvm_red "Error: Failed to create worktree"
+        return 1
+    fi
+
+    # Initialize submodules
+    echo "Initializing submodules (this may take a while)..."
+    git -C "$version_dir" submodule update --init --recursive
+    if [[ $? -ne 0 ]]; then
+        _espvm_red "Error: Failed to initialize submodules"
+        return 1
+    fi
+
+    # Install tools if needed
+    _espvm_maybe_install "$version_dir" "$version" || return 1
+
+    _espvm_green "ESP-IDF $version installed successfully"
+    echo "Run 'espvm use $version' to activate it"
+    return 0
+}
+
+# Switch to a specific version
+espvm_use() {
+    local version="$1"
+    if [[ -z "$version" ]]; then
+        _espvm_red "Usage: espvm use <version>"
+        return 1
+    fi
+
+    version=$(_espvm_normalize_version "$version")
+    local version_dir="$ESPVM_DIR/$version"
+
+    if [[ ! -d "$version_dir" ]]; then
+        _espvm_red "Error: $version is not installed"
+        echo "Run 'espvm install $version' first"
+        return 1
+    fi
+
+    if [[ ! -f "$version_dir/export.sh" ]]; then
+        _espvm_red "Error: export.sh not found in $version_dir"
+        return 1
+    fi
+
+    # Source the export script
+    echo "Activating ESP-IDF $version..."
+    source "$version_dir/export.sh"
+    if [[ $? -ne 0 ]]; then
+        _espvm_red "Error: Failed to source export.sh"
+        return 1
+    fi
+
+    # Save current version
+    echo "$version" > "$ESPVM_CURRENT_FILE"
+
+    _espvm_green "Now using ESP-IDF $version"
+    return 0
+}
+
+# List installed versions
+espvm_list() {
+    if [[ ! -d "$ESPVM_DIR" ]]; then
+        echo "No versions installed"
+        return 0
+    fi
+
+    local current=""
+    if [[ -f "$ESPVM_CURRENT_FILE" ]]; then
+        current=$(cat "$ESPVM_CURRENT_FILE")
+    fi
+
+    echo "Installed versions:"
+    local found=0
+    for dir in "$ESPVM_DIR"/v*/; do
+        if [[ -d "$dir" ]]; then
+            local ver=$(basename "$dir")
+            found=1
+            if [[ "$ver" == "$current" ]]; then
+                _espvm_green "* $ver (active)"
+            else
+                echo "  $ver"
+            fi
+        fi
+    done
+
+    if [[ $found -eq 0 ]]; then
+        echo "  (none)"
+    fi
+    return 0
+}
+
+# List available remote versions
+espvm_list_remote() {
+    echo "Fetching available versions from GitHub..."
+
+    # Use GitHub API to get tags
+    local tags
+    if _espvm_command_exists curl; then
+        tags=$(curl -s "https://api.github.com/repos/espressif/esp-idf/tags?per_page=100" | \
+               grep '"name":' | sed 's/.*"name": "\([^"]*\)".*/\1/' | grep '^v[0-9]')
+    elif _espvm_command_exists wget; then
+        tags=$(wget -qO- "https://api.github.com/repos/espressif/esp-idf/tags?per_page=100" | \
+               grep '"name":' | sed 's/.*"name": "\([^"]*\)".*/\1/' | grep '^v[0-9]')
+    else
+        _espvm_red "Error: curl or wget is required"
+        return 1
+    fi
+
+    if [[ -z "$tags" ]]; then
+        _espvm_red "Error: Failed to fetch tags"
+        return 1
+    fi
+
+    echo "Available versions (latest 100):"
+    echo "$tags" | head -30
+    echo "..."
+    echo "Use 'espvm install <version>' to install a specific version"
+    return 0
+}
+
+# Remove an installed version
+espvm_remove() {
+    local version="$1"
+    if [[ -z "$version" ]]; then
+        _espvm_red "Usage: espvm remove <version>"
+        return 1
+    fi
+
+    version=$(_espvm_normalize_version "$version")
+    local version_dir="$ESPVM_DIR/$version"
+
+    if [[ ! -d "$version_dir" ]]; then
+        _espvm_red "Error: $version is not installed"
+        return 1
+    fi
+
+    # Check if it's the current version
+    local current=""
+    if [[ -f "$ESPVM_CURRENT_FILE" ]]; then
+        current=$(cat "$ESPVM_CURRENT_FILE")
+    fi
+
+    if [[ "$version" == "$current" ]]; then
+        _espvm_yellow "Warning: $version is currently active"
+    fi
+
+    echo "Removing ESP-IDF $version..."
+
+    # Remove worktree
+    git -C "$ESPVM_BARE_DIR" worktree remove "$version_dir" --force
+    if [[ $? -ne 0 ]]; then
+        # Fallback to manual removal
+        rm -rf "$version_dir"
+    fi
+
+    # Prune worktrees
+    git -C "$ESPVM_BARE_DIR" worktree prune
+
+    # Clear current if removed
+    if [[ "$version" == "$current" ]]; then
+        rm -f "$ESPVM_CURRENT_FILE"
+    fi
+
+    _espvm_green "$version removed successfully"
+    return 0
+}
+
+# Update an installed version
+espvm_update() {
+    local version="$1"
+    if [[ -z "$version" ]]; then
+        _espvm_red "Usage: espvm update <version>"
+        return 1
+    fi
+
+    version=$(_espvm_normalize_version "$version")
+    local version_dir="$ESPVM_DIR/$version"
+
+    if [[ ! -d "$version_dir" ]]; then
+        _espvm_red "Error: $version is not installed"
+        return 1
+    fi
+
+    echo "Updating ESP-IDF $version..."
+
+    # Fetch latest
+    git -C "$ESPVM_BARE_DIR" fetch origin tag "$version" --force
+    if [[ $? -ne 0 ]]; then
+        _espvm_red "Error: Failed to fetch updates"
+        return 1
+    fi
+
+    # Reset worktree to the tag
+    git -C "$version_dir" checkout "$version"
+    git -C "$version_dir" reset --hard "$version"
+
+    # Update submodules
+    echo "Updating submodules..."
+    git -C "$version_dir" submodule update --init --recursive
+    if [[ $? -ne 0 ]]; then
+        _espvm_red "Error: Failed to update submodules"
+        return 1
+    fi
+
+    # Check and install tools if needed
+    _espvm_maybe_install "$version_dir" "$version" || return 1
+
+    _espvm_green "$version updated successfully"
+    return 0
+}
+
+# Show current version
+espvm_current() {
+    if [[ -f "$ESPVM_CURRENT_FILE" ]]; then
+        local current=$(cat "$ESPVM_CURRENT_FILE")
+        echo "Current version: $current"
+        if [[ -n "$IDF_PATH" ]]; then
+            echo "IDF_PATH: $IDF_PATH"
+        fi
+    else
+        echo "No version currently active"
+        echo "Run 'espvm use <version>' to activate a version"
+    fi
+    return 0
+}
+
+# Show help
+espvm_help() {
+    cat << 'EOF'
+espvm - ESP-IDF Version Manager
+
+Usage: espvm <command> [arguments]
+
+Commands:
+  install <version>   Install an ESP-IDF version (e.g., espvm install 5.4.1)
+  use <version>       Switch to an installed version
+  list                List installed versions
+  list-remote         List available versions from GitHub
+  remove <version>    Remove an installed version
+  update <version>    Update an installed version
+  current             Show currently active version
+  help                Show this help message
+
+Examples:
+  espvm install 5.4.1    Install ESP-IDF v5.4.1
+  espvm use 5.4.1        Switch to v5.4.1
+  espvm list             Show installed versions
+
+Configuration:
+  ESPVM_DIR    Installation directory (default: ~/.espressif/esp-versions)
+
+Note: This script should be sourced, not executed, for 'use' to work:
+  source /path/to/espvm
+
+Add to ~/.bashrc for convenience:
+  source /path/to/espvm
+EOF
+}
+
+# Main entry point
+espvm() {
+    local cmd="$1"
+    shift
+
+    case "$cmd" in
+        install)
+            espvm_install "$@"
+            ;;
+        use)
+            espvm_use "$@"
+            ;;
+        list)
+            espvm_list "$@"
+            ;;
+        list-remote)
+            espvm_list_remote "$@"
+            ;;
+        remove)
+            espvm_remove "$@"
+            ;;
+        update)
+            espvm_update "$@"
+            ;;
+        current)
+            espvm_current "$@"
+            ;;
+        help|--help|-h|"")
+            espvm_help
+            ;;
+        *)
+            _espvm_red "Unknown command: $cmd"
+            espvm_help
+            return 1
+            ;;
+    esac
+}
+
+# If script is executed (not sourced), run main function
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    espvm "$@"
+fi
