@@ -849,6 +849,23 @@ _espvm_current() {
     return 0
 }
 
+# Show status of all SDKs
+_espvm_status() {
+    echo "ESP-IDF:"
+    if [[ -n "$IDF_PATH" ]]; then
+        _espvm_green "  $(basename "$IDF_PATH") (active)"
+    else
+        echo "  (not active)"
+    fi
+
+    echo "ESP-Matter:"
+    if [[ -n "$ESP_MATTER_PATH" ]]; then
+        _espvm_green "  $(basename "$ESP_MATTER_PATH") (active)"
+    else
+        echo "  (not active)"
+    fi
+}
+
 # Show/set configuration
 espvm_config() {
     local action="$1"
@@ -998,36 +1015,92 @@ espvm_help() {
     cat << 'EOF'
 espvm - ESP SDK Version Manager
 
-Usage: espvm <sdk> <command> [args]
+Usage:
+  espvm [-i|-m] <version>     Activate version (install if needed)
+  espvm [-i|-m] <command>     Run command
 
-SDKs:  idf, matter
+SDK Flags:
+  -i    ESP-IDF (default)
+  -m    ESP-Matter
 
 Commands:
-  install <ver>    Install a version
-  use <ver>        Activate in current shell
-  list             List installed versions
-  list-remote      List available tags/branches
-  remove <ver>     Remove a version
-  update <ver>     Update a version
-  current          Show active version
-  config           Show/set configuration
+  i <ver>         Install version
+  use <ver>       Activate version
+  ls              List installed
+  remote          List available
+  rm <ver>        Remove version
+  status          Show active versions
+  config          Configuration
+
+Legacy:
+  espvm idf <cmd>     Full SDK name still works
+  espvm matter <cmd>
 
 Examples:
-  espvm idf install 5.4.1      espvm matter install 1.0
-  espvm idf use 5.4.1          espvm idf list-remote
-  espvm config set use-ssh yes
+  espvm 5.4.1         Activate IDF 5.4.1
+  espvm i 5.5         Install IDF 5.5
+  espvm -m i 1.0      Install Matter 1.0
+  espvm -m use 1.0    Activate Matter 1.0
+  espvm ls            List IDF versions
+  espvm -m ls         List Matter versions
+  espvm status        Show what's active
 
 EOF
 }
 
 # Main entry point
 espvm() {
+    local sdk="idf"  # Default SDK
+
+    # Parse SDK flag first
+    case "$1" in
+        -i) sdk="idf"; shift ;;
+        -m) sdk="matter"; shift ;;
+    esac
+
     local cmd="$1"
     shift 2>/dev/null || true
 
+    # Smart version detection: v5.4.1, 5.4.1, release/v5.0
+    if [[ "$cmd" =~ ^v?[0-9] ]] || [[ "$cmd" =~ ^release[/-] ]]; then
+        _espvm_use "$sdk" "$cmd" "$@"
+        return
+    fi
+
     case "$cmd" in
+        # Legacy full names still work
         idf|matter)
             _espvm_sdk_command "$cmd" "$@"
+            ;;
+        # Commands use selected SDK
+        i|install)
+            _espvm_sdk_command "$sdk" "install" "$@"
+            ;;
+        use)
+            _espvm_sdk_command "$sdk" "use" "$@"
+            ;;
+        ls|list)
+            _espvm_list "$sdk"
+            ;;
+        remote|list-remote)
+            _espvm_list_remote "$sdk"
+            ;;
+        rm|remove)
+            _espvm_remove "$sdk" "$@"
+            ;;
+        update)
+            _espvm_update "$sdk" "$@"
+            ;;
+        current)
+            _espvm_current "$sdk"
+            ;;
+        repair)
+            _espvm_ensure_bare "$sdk" || return 1
+            _espvm_repair_worktrees "$sdk"
+            _espvm_green "Worktree links repaired"
+            ;;
+        status)
+            _espvm_status
             ;;
         config)
             espvm_config "$@"
@@ -1036,7 +1109,7 @@ espvm() {
             espvm_help
             ;;
         *)
-            _espvm_red "Unknown command: $cmd"
+            _espvm_red "Unknown: $cmd"
             espvm_help
             return 1
             ;;
