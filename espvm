@@ -77,12 +77,12 @@ _espvm_get_worktree_dir() {
         return
     fi
 
-    # First time - ask user
-    echo ""
-    _espvm_blue "First-time setup: Where would you like to store ESP SDK versions?"
-    echo "  [1] ~/.espressif/versions (default)"
-    echo "  [2] Custom path"
-    echo ""
+    # First time - ask user (print to stderr so it's not captured)
+    echo "" >&2
+    _espvm_blue "First-time setup: Where would you like to store ESP SDK versions?" >&2
+    echo "  [1] ~/.espressif/versions (default)" >&2
+    echo "  [2] Custom path" >&2
+    echo "" >&2
     read -p "Choice [1]: " choice
 
     case "$choice" in
@@ -99,8 +99,8 @@ _espvm_get_worktree_dir() {
 
     # Save to config
     _espvm_save_config
-    _espvm_green "Configuration saved to $ESPVM_CONFIG_FILE"
-    echo ""
+    _espvm_green "Configuration saved to $ESPVM_CONFIG_FILE" >&2
+    echo "" >&2
 
     echo "$ESPVM_WORKTREE_DIR"
 }
@@ -301,9 +301,9 @@ _espvm_install() {
         return 1
     fi
 
-    # Initialize submodules
-    echo "Initializing submodules (this may take a while)..."
-    git -C "$version_dir" submodule update --init --recursive
+    # Initialize submodules (shallow clone + parallel for speed)
+    echo "Initializing submodules..."
+    git -C "$version_dir" submodule update --init --recursive --jobs 8 --depth 1
     if [[ $? -ne 0 ]]; then
         _espvm_red "Error: Failed to initialize submodules"
         return 1
@@ -337,9 +337,13 @@ _espvm_use() {
     local current_file="$(_espvm_get_current_file "$sdk")"
 
     if [[ ! -d "$version_dir" ]]; then
-        _espvm_red "Error: $sdk_name $version is not installed"
-        echo "Run 'espvm $sdk install $version' first"
-        return 1
+        _espvm_yellow "$sdk_name $version is not installed"
+        read -p "Install it now? [y/N]: " answer
+        if [[ "$answer" =~ ^[Yy]$ ]]; then
+            _espvm_install "$sdk" "$version" || return 1
+        else
+            return 1
+        fi
     fi
 
     if [[ ! -f "$version_dir/export.sh" ]]; then
