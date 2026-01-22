@@ -640,24 +640,21 @@ _espvm_sdk_help() {
     local sdk_name="${_ESPVM_SDKS[$sdk]}"
 
     cat << EOF
-espvm $sdk - Manage $sdk_name versions
-
-Usage: espvm $sdk <command> [arguments]
+Usage: espvm $sdk <command> [args]
 
 Commands:
-  install <version> [--path=<dir>]   Install a version
-  use <version>                      Switch to an installed version
-  list                               List installed versions
-  list-remote                        List available versions (tags + branches)
-  remove <version>                   Remove an installed version
-  update <version>                   Update an installed version
-  current                            Show currently active version
+  install <ver> [--path=<dir>]   Install version (tag or branch)
+  use <ver>                      Activate version in current shell
+  list                           List installed versions
+  list-remote                    List available tags and branches
+  remove <ver>                   Remove installed version
+  update <ver>                   Update version to latest
+  current                        Show active version
 
 Examples:
-  espvm $sdk install 5.4.1           Install $sdk_name v5.4.1
-  espvm $sdk use 5.4.1               Switch to v5.4.1
-  espvm $sdk list                    Show installed versions
-  espvm $sdk list-remote             Show available versions
+  espvm $sdk install 5.4.1
+  espvm $sdk use 5.4.1
+  espvm $sdk list-remote
 EOF
 }
 
@@ -705,47 +702,25 @@ espvm_help() {
     cat << 'EOF'
 espvm - ESP SDK Version Manager
 
-Usage: espvm <sdk> <command> [arguments]
-       espvm <command> [arguments]
+Usage: espvm <sdk> <command> [args]
 
-SDKs:
-  idf        Manage ESP-IDF versions
-  matter     Manage ESP-Matter versions
+SDKs:  idf, matter
 
-Global Commands:
-  config     Show/set configuration
-  help       Show this help message
-
-SDK Commands (use with 'idf' or 'matter'):
-  install <version> [--path=<dir>]   Install a version
-  use <version>                      Switch to an installed version
-  list                               List installed versions
-  list-remote                        List available versions (tags + branches)
-  remove <version>                   Remove an installed version
-  update <version>                   Update an installed version
-  current                            Show currently active version
+Commands:
+  install <ver>    Install a version
+  use <ver>        Activate in current shell
+  list             List installed versions
+  list-remote      List available tags/branches
+  remove <ver>     Remove a version
+  update <ver>     Update a version
+  current          Show active version
+  config           Show/set configuration
 
 Examples:
-  espvm idf install 5.4.1       Install ESP-IDF v5.4.1
-  espvm idf use 5.4.1           Switch to v5.4.1
-  espvm idf list-remote         List available ESP-IDF versions
-
-  espvm matter install 1.0      Install ESP-Matter v1.0
-  espvm matter use 1.0          Switch to v1.0
-
-  espvm config                  Show current configuration
-  espvm config set worktree-dir /path/to/versions
+  espvm idf install 5.4.1      espvm matter install 1.0
+  espvm idf use 5.4.1          espvm idf list-remote
   espvm config set use-ssh yes
 
-Configuration:
-  On first use, espvm will ask where to store SDK versions.
-  Configuration is saved to ~/.espressif/.espvm/config
-
-  SSH auto-detection: espvm automatically uses SSH URLs if your
-  GitHub SSH key is configured, otherwise uses HTTPS.
-
-Note: This script should be sourced for 'use' to work in current shell:
-  source /path/to/espvm
 EOF
 }
 
