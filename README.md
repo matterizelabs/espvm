@@ -1,6 +1,9 @@
 # `espvm` - ESP SDK Version Manager
 
-Manage multiple ESP-IDF and ESP-Matter versions using git worktree.
+Manage multiple ESP-IDF and ESP-Matter versions efficiently.
+
+- ESP-IDF: Uses git worktree for disk/network efficiency
+- ESP-Matter: Uses shallow clones (worktree incompatible with its submodules)
 
 ## Install
 
@@ -15,40 +18,73 @@ chmod +x ~/.local/bin/espvm
 echo 'source ~/.local/bin/espvm' >> ~/.bashrc
 ```
 
+## Quick Start
+
+```bash
+# Install and activate ESP-IDF
+espvm i 5.4.1           # Install
+espvm 5.4.1             # Activate (or install if needed)
+
+# Install and activate ESP-Matter (requires IDF active)
+espvm -m i 1.4          # Install Matter
+espvm -m 1.4            # Activate Matter
+```
+
 ## Usage
 
 ```bash
-espvm idf install 5.4.1      # Install ESP-IDF v5.4.1
-espvm idf use 5.4.1          # Activate in current shell
-espvm idf list               # List installed versions
-espvm idf list-remote        # List available tags/branches
+espvm [-i|-m] <version>     # Activate version (install if needed)
+espvm [-i|-m] <command>     # Run command
 
-espvm idf use 5.4.1          # ESP-IDF must be active first
-espvm matter install 1.0     # Install ESP-Matter (uses shallow submodules)
-espvm matter use 1.0
-
-espvm config                 # Show configuration
+# SDK Flags
+#   -i    ESP-IDF (default)
+#   -m    ESP-Matter
 ```
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `install <ver> [-v] [--force]` | Install version |
-| `use <ver> [-v]` | Activate version |
-| `list` | List installed versions |
-| `list-remote` | List available tags/branches |
-| `remove <ver>` | Remove version |
-| `update <ver>` | Update version |
-| `current` | Show active version |
-| `repair` | Fix broken worktree links |
+| Short | Full | Description |
+|-------|------|-------------|
+| `i` | `install` | Install version |
+| `use` | `use` | Activate version |
+| `ls` | `list` | List installed |
+| `remote` | `list-remote` | List available tags/branches |
+| `rm` | `remove` | Remove version |
+| | `update` | Update version |
+| | `current` | Show active version |
+| | `status` | Show all active SDKs |
+| | `repair` | Fix broken worktree links (IDF only) |
+
+## Examples
+
+```bash
+# ESP-IDF
+espvm 5.4.1             # Activate IDF 5.4.1
+espvm i 5.5             # Install IDF 5.5
+espvm ls                # List installed IDF versions
+espvm remote            # List available IDF versions
+espvm rm 5.3            # Remove IDF 5.3
+
+# ESP-Matter
+espvm -m i 1.4          # Install Matter 1.4
+espvm -m 1.4            # Activate Matter 1.4
+espvm -m ls             # List installed Matter versions
+
+# Status
+espvm status            # Show active IDF and Matter versions
+
+# Legacy syntax still works
+espvm idf install 5.4.1
+espvm matter use 1.4
+```
 
 ## Configuration
 
 ```bash
-espvm config set worktree-dir /path/to/versions
-espvm config set use-ssh yes    # yes, no, auto
-espvm config reset
+espvm config                          # Show config
+espvm config set worktree-dir /path   # Set versions directory
+espvm config set use-ssh yes          # yes, no, auto
+espvm config reset                    # Reset to defaults
 ```
 
 Config stored at `~/.espressif/.espvm/config`
