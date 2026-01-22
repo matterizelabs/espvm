@@ -146,6 +146,8 @@ _espvm_get_bare_dir() {
 _espvm_get_sdk_dir() {
     local sdk="$1"
     local worktree_dir="$(_espvm_get_worktree_dir)"
+    # Remove trailing slash
+    worktree_dir="${worktree_dir%/}"
     local sdk_name="${_ESPVM_SDKS[$sdk]}"
     echo "$worktree_dir/$sdk_name"
 }
@@ -192,7 +194,7 @@ _espvm_init_bare() {
     local sdk_name="${_ESPVM_SDKS[$sdk]}"
 
     if [[ ! -d "$bare_dir" ]]; then
-        echo "Initializing $sdk_name repository (first-time setup)..."
+        echo "Initializing $sdk_name repository..."
         mkdir -p "$(dirname "$bare_dir")"
         git clone --bare "$repo_url" "$bare_dir"
         if [[ $? -ne 0 ]]; then
@@ -202,6 +204,18 @@ _espvm_init_bare() {
         # Configure the bare repo for worktrees
         git -C "$bare_dir" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
         _espvm_green "Repository initialized successfully"
+    fi
+    return 0
+}
+
+# Ensure bare repo exists, recover if needed for existing worktrees
+_espvm_ensure_bare() {
+    local sdk="$1"
+    local bare_dir="$(_espvm_get_bare_dir "$sdk")"
+
+    if [[ ! -d "$bare_dir" ]]; then
+        _espvm_yellow "Bare repository missing, reinitializing..."
+        _espvm_init_bare "$sdk" || return 1
     fi
     return 0
 }
@@ -322,13 +336,20 @@ _espvm_install() {
         fi
     fi
 
-    # Create worktree
+    # Create worktree (prune stale ones first)
     echo "Creating worktree for $version..."
     mkdir -p "$sdk_dir"
-    git -C "$bare_dir" worktree add "$version_dir" "$version"
-    if [[ $? -ne 0 ]]; then
-        _espvm_red "Error: Failed to create worktree"
-        return 1
+    git -C "$bare_dir" worktree prune 2>/dev/null
+    if ! git -C "$bare_dir" worktree add "$version_dir" "$version" 2>/dev/null; then
+        # Worktree might exist in git but directory is gone/stale
+        _espvm_yellow "Cleaning up stale worktree reference..."
+        git -C "$bare_dir" worktree remove "$version_dir" --force 2>/dev/null
+        git -C "$bare_dir" worktree prune 2>/dev/null
+        git -C "$bare_dir" worktree add "$version_dir" "$version"
+        if [[ $? -ne 0 ]]; then
+            _espvm_red "Error: Failed to create worktree"
+            return 1
+        fi
     fi
 
     # Initialize submodules (shallow clone + parallel for speed)
@@ -532,6 +553,9 @@ _espvm_remove() {
 
     echo "Removing $sdk_name $version..."
 
+    # Ensure bare repo exists for worktree operations
+    _espvm_ensure_bare "$sdk"
+
     # Remove worktree
     git -C "$bare_dir" worktree remove "$version_dir" --force 2>/dev/null
     if [[ $? -ne 0 ]]; then
@@ -574,6 +598,9 @@ _espvm_update() {
     fi
 
     echo "Updating $sdk_name $version..."
+
+    # Ensure bare repo exists
+    _espvm_ensure_bare "$sdk" || return 1
 
     # Fetch latest
     git -C "$bare_dir" fetch origin tag "$version" --force 2>/dev/null || \
