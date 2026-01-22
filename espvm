@@ -200,11 +200,12 @@ _espvm_check_tools() {
     return $?
 }
 
-# Run install.sh if needed
+# Run install.sh if needed (force=1 to skip check)
 _espvm_maybe_install() {
     local version_dir="$1"
     local version="$2"
     local sdk="$3"
+    local force="${4:-0}"
 
     # Check if install.sh exists
     if [[ ! -f "$version_dir/install.sh" ]]; then
@@ -212,8 +213,8 @@ _espvm_maybe_install() {
         return 0
     fi
 
-    # For ESP-IDF, check if tools are already installed
-    if [[ "$sdk" == "idf" ]]; then
+    # For ESP-IDF, check if tools are already installed (unless force)
+    if [[ "$sdk" == "idf" && "$force" -ne 1 ]]; then
         if _espvm_check_tools "$version_dir"; then
             _espvm_green "Tools already installed for $version"
             return 0
@@ -238,6 +239,7 @@ _espvm_install() {
 
     # Parse additional flags
     _ESPVM_WORKTREE_FLAG=""
+    local force=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --path=*)
@@ -250,6 +252,10 @@ _espvm_install() {
                 _ESPVM_WORKTREE_FLAG="${_ESPVM_WORKTREE_FLAG/#\~/$HOME}"
                 shift 2
                 ;;
+            --force|-f)
+                force=1
+                shift
+                ;;
             *)
                 _espvm_red "Unknown option: $1"
                 return 1
@@ -258,7 +264,7 @@ _espvm_install() {
     done
 
     if [[ -z "$version" ]]; then
-        _espvm_red "Usage: espvm $sdk install <version> [--path=<dir>]"
+        _espvm_red "Usage: espvm $sdk install <version> [--path=<dir>] [--force]"
         return 1
     fi
 
@@ -271,7 +277,14 @@ _espvm_install() {
     local bare_dir="$(_espvm_get_bare_dir "$sdk")"
 
     if [[ -d "$version_dir" ]]; then
+        if [[ $force -eq 1 ]]; then
+            _espvm_yellow "Reinstalling tools for $sdk_name $version..."
+            _espvm_maybe_install "$version_dir" "$version" "$sdk" 1 || return 1
+            _espvm_green "Tools reinstalled successfully"
+            return 0
+        fi
         _espvm_yellow "$sdk_name $version is already installed at $version_dir"
+        echo "Use --force to reinstall tools"
         return 0
     fi
 
@@ -336,11 +349,13 @@ _espvm_use() {
     local version_dir="$sdk_dir/$version"
     local current_file="$(_espvm_get_current_file "$sdk")"
 
+    local just_installed=0
     if [[ ! -d "$version_dir" ]]; then
         _espvm_yellow "$sdk_name $version is not installed"
         read -p "Install it now? [y/N]: " answer
         if [[ "$answer" =~ ^[Yy]$ ]]; then
             _espvm_install "$sdk" "$version" || return 1
+            just_installed=1
         else
             return 1
         fi
@@ -351,12 +366,26 @@ _espvm_use() {
         return 1
     fi
 
-    # Source the export script
-    echo "Activating $sdk_name $version..."
-    source "$version_dir/export.sh"
-    if [[ $? -ne 0 ]]; then
-        _espvm_red "Error: Failed to source export.sh"
-        return 1
+    # Run install.sh first if this was just cloned, or if activation might fail
+    if [[ $just_installed -eq 0 ]]; then
+        # Existing install - check if tools work, offer to fix if not
+        echo "Activating $sdk_name $version..."
+        source "$version_dir/export.sh"
+        if [[ "$IDF_PATH" != "$version_dir" ]] || ! command -v idf.py &>/dev/null; then
+            _espvm_red "Activation failed - tools may not be installed"
+            read -p "Run install.sh to fix? [y/N]: " answer
+            if [[ "$answer" =~ ^[Yy]$ ]]; then
+                (cd "$version_dir" && ./install.sh) || return 1
+                echo "Retrying activation..."
+                source "$version_dir/export.sh"
+            else
+                return 1
+            fi
+        fi
+    else
+        # Just installed - tools already run, just export
+        echo "Activating $sdk_name $version..."
+        source "$version_dir/export.sh"
     fi
 
     # Save current version
