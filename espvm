@@ -20,11 +20,76 @@ declare -A _ESPVM_SDK_REPOS=(
     [matter]="espressif/esp-matter"
 )
 
+# SDK-specific configurations
+declare -A _ESPVM_SDK_ENV_VAR=(
+    [idf]="IDF_PATH"
+    [matter]="ESP_MATTER_PATH"
+)
+
+declare -A _ESPVM_SDK_INSTALL_ARGS=(
+    [idf]=""
+    [matter]="--no-host-tool"
+)
+
+declare -A _ESPVM_SDK_USE_WORKTREE=(
+    [idf]=1
+    [matter]=0
+)
+
+declare -A _ESPVM_SDK_REQUIRES=(
+    [idf]=""
+    [matter]="idf"
+)
+
 # Colors for output
 _espvm_red() { echo -e "\033[0;31m$1\033[0m"; }
 _espvm_green() { echo -e "\033[0;32m$1\033[0m"; }
 _espvm_yellow() { echo -e "\033[0;33m$1\033[0m"; }
 _espvm_blue() { echo -e "\033[0;34m$1\033[0m"; }
+
+# Get the environment variable name for an SDK
+_espvm_get_env_var() {
+    local sdk="$1"
+    echo "${_ESPVM_SDK_ENV_VAR[$sdk]}"
+}
+
+# Get the current path for an SDK from its env var
+_espvm_get_active_path() {
+    local sdk="$1"
+    local env_var="${_ESPVM_SDK_ENV_VAR[$sdk]}"
+    echo "${!env_var}"
+}
+
+# Check if SDK is currently active
+_espvm_is_active() {
+    local sdk="$1"
+    [[ -n "$(_espvm_get_active_path "$sdk")" ]]
+}
+
+# Check if SDK uses worktrees
+_espvm_uses_worktree() {
+    local sdk="$1"
+    [[ "${_ESPVM_SDK_USE_WORKTREE[$sdk]}" == "1" ]]
+}
+
+# Get install.sh arguments for SDK
+_espvm_get_install_args() {
+    local sdk="$1"
+    echo "${_ESPVM_SDK_INSTALL_ARGS[$sdk]}"
+}
+
+# Check SDK dependencies
+_espvm_check_sdk_deps() {
+    local sdk="$1"
+    local requires="${_ESPVM_SDK_REQUIRES[$sdk]}"
+    if [[ -n "$requires" ]] && ! _espvm_is_active "$requires"; then
+        local req_name="${_ESPVM_SDKS[$requires]}"
+        _espvm_red "Error: ${_ESPVM_SDKS[$sdk]} requires $req_name to be active"
+        echo "Run 'espvm use <version>' first"
+        return 1
+    fi
+    return 0
+}
 
 # Run command quietly, show output on error or if verbose
 _espvm_run_quiet() {
@@ -340,7 +405,8 @@ _espvm_maybe_install() {
     fi
 
     echo -n "Installing tools for $version... "
-    if (cd "$version_dir" && _espvm_run_quiet ./install.sh); then
+    local install_args="$(_espvm_get_install_args "$sdk")"
+    if (cd "$version_dir" && _espvm_run_quiet ./install.sh $install_args); then
         _espvm_green "done"
         return 0
     else
@@ -485,11 +551,7 @@ _espvm_install_matter() {
     local repo_url="$(_espvm_get_repo_url "matter")"
 
     # ESP-Matter requires ESP-IDF to be active
-    if [[ -z "$IDF_PATH" ]]; then
-        _espvm_red "Error: ESP-IDF must be active before installing ESP-Matter"
-        echo "Run 'espvm use <version>' first"
-        return 1
-    fi
+    _espvm_check_sdk_deps "matter" || return 1
 
     mkdir -p "$sdk_dir"
 
@@ -518,6 +580,51 @@ _espvm_install_matter() {
             rm -rf "$version_dir"
             return 1
         fi
+    fi
+
+    return 0
+}
+
+# Clear SDK environment variables and PATH entries
+_espvm_clear_sdk_env() {
+    local sdk="$1"
+    local active_path="$(_espvm_get_active_path "$sdk")"
+    if [[ -n "$active_path" ]]; then
+        PATH=$(echo "$PATH" | tr ':' '\n' | grep -vF "$active_path" | tr '\n' ':')
+        PATH="${PATH%:}"
+    fi
+
+    if [[ "$sdk" == "idf" ]]; then
+        [[ -n "$IDF_TOOLS_PATH" ]] && PATH=$(echo "$PATH" | tr ':' '\n' | grep -vF "$IDF_TOOLS_PATH" | tr '\n' ':')
+        PATH="${PATH%:}"
+        unset IDF_PATH IDF_PYTHON_ENV_PATH IDF_TOOLS_PATH IDF_COMPONENT_MANAGER_URL
+        unset OPENOCD_SCRIPTS ESP_IDF_VERSION ESP_ROM_ELF_DIR
+        unset ESP_MATTER_PATH  # Matter depends on IDF
+    else
+        unset ESP_MATTER_PATH
+    fi
+}
+
+# Run install.sh to fix activation issues
+_espvm_run_install_fix() {
+    local sdk="$1"
+    local version_dir="$2"
+    local install_args="$(_espvm_get_install_args "$sdk")"
+    (cd "$version_dir" && _espvm_run_quiet ./install.sh $install_args)
+}
+
+# Verify that SDK activation succeeded
+_espvm_verify_activation() {
+    local sdk="$1"
+    local version_dir="$2"
+    local active_path="$(_espvm_get_active_path "$sdk")"
+
+    if [[ "$active_path" != "$version_dir" ]]; then
+        return 1
+    fi
+
+    if [[ "$sdk" == "idf" ]] && ! command -v idf.py &>/dev/null; then
+        return 1
     fi
 
     return 0
@@ -566,12 +673,8 @@ _espvm_use() {
         fi
     fi
 
-    # ESP-Matter requires ESP-IDF to be active
-    if [[ "$sdk" == "matter" && -z "$IDF_PATH" ]]; then
-        _espvm_red "Error: ESP-IDF must be active before using ESP-Matter"
-        echo "Run 'espvm use <version>' first"
-        return 1
-    fi
+    # Check SDK dependencies
+    _espvm_check_sdk_deps "$sdk" || return 1
 
     if [[ ! -f "$version_dir/export.sh" ]]; then
         _espvm_red "Error: export.sh not found in $version_dir"
@@ -585,27 +688,7 @@ _espvm_use() {
     fi
 
     # Clear previous environment to avoid conflicts
-    if [[ "$sdk" == "idf" ]]; then
-        # Switching IDF versions - clear IDF environment
-        if [[ -n "$IDF_PATH" ]]; then
-            local old_idf="$IDF_PATH"
-            PATH=$(echo "$PATH" | tr ':' '\n' | grep -vF "$old_idf" | tr '\n' ':')
-            PATH="${PATH%:}"
-            [[ -n "$IDF_TOOLS_PATH" ]] && PATH=$(echo "$PATH" | tr ':' '\n' | grep -vF "$IDF_TOOLS_PATH" | tr '\n' ':')
-            PATH="${PATH%:}"
-        fi
-        unset IDF_PATH IDF_PYTHON_ENV_PATH IDF_TOOLS_PATH IDF_COMPONENT_MANAGER_URL
-        unset OPENOCD_SCRIPTS ESP_IDF_VERSION ESP_ROM_ELF_DIR
-        # Also clear matter env since it depends on IDF
-        unset ESP_MATTER_PATH
-    else
-        # Switching Matter versions - preserve IDF, clear Matter
-        if [[ -n "$ESP_MATTER_PATH" ]]; then
-            PATH=$(echo "$PATH" | tr ':' '\n' | grep -vF "$ESP_MATTER_PATH" | tr '\n' ':')
-            PATH="${PATH%:}"
-        fi
-        unset ESP_MATTER_PATH
-    fi
+    _espvm_clear_sdk_env "$sdk"
 
     # Activate the version
     echo -n "Activating $sdk_name $version... "
@@ -616,7 +699,7 @@ _espvm_use() {
         fi
         read -p "Run install.sh to fix? [y/N]: " answer
         if [[ "$answer" =~ ^[Yy]$ ]]; then
-            (cd "$version_dir" && _espvm_run_quiet ./install.sh) || return 1
+            _espvm_run_install_fix "$sdk" "$version_dir" || return 1
             echo -n "Retrying activation... "
             if _espvm_source_quiet "$version_dir/export.sh"; then
                 _espvm_green "done"
@@ -628,21 +711,15 @@ _espvm_use() {
             return 1
         fi
     else
-        # Verify activation - different checks for IDF vs Matter
-        local activation_ok=0
-        if [[ "$sdk" == "idf" ]]; then
-            [[ "$IDF_PATH" == "$version_dir" ]] && command -v idf.py &>/dev/null && activation_ok=1
-        else
-            [[ "$ESP_MATTER_PATH" == "$version_dir" ]] && activation_ok=1
-        fi
-        if [[ $activation_ok -eq 0 ]]; then
+        # Verify activation
+        if ! _espvm_verify_activation "$sdk" "$version_dir"; then
             _espvm_red "failed"
             if [[ $just_installed -eq 1 ]]; then
                 return 1
             fi
             read -p "Run install.sh to fix? [y/N]: " answer
             if [[ "$answer" =~ ^[Yy]$ ]]; then
-                (cd "$version_dir" && _espvm_run_quiet ./install.sh) || return 1
+                _espvm_run_install_fix "$sdk" "$version_dir" || return 1
                 echo -n "Retrying activation... "
                 _espvm_source_quiet "$version_dir/export.sh"
                 _espvm_green "done"
@@ -684,13 +761,8 @@ _espvm_list() {
             local ver_dir="${dir%/}"
             found=1
             # Check if actually active
-            local is_active=0
-            if [[ "$sdk" == "idf" && "$IDF_PATH" == "$ver_dir" ]]; then
-                is_active=1
-            elif [[ "$sdk" == "matter" && "$ESP_MATTER_PATH" == "$ver_dir" ]]; then
-                is_active=1
-            fi
-            if [[ $is_active -eq 1 ]]; then
+            local active_path="$(_espvm_get_active_path "$sdk")"
+            if [[ "$active_path" == "$ver_dir" ]]; then
                 _espvm_green "* $ver (active)"
             else
                 echo "  $ver"
@@ -781,8 +853,7 @@ _espvm_remove() {
 
     echo "Removing $sdk_name $version..."
 
-    if [[ "$sdk" == "idf" ]]; then
-        # IDF uses worktrees
+    if _espvm_uses_worktree "$sdk"; then
         local bare_dir="$(_espvm_get_bare_dir "$sdk")"
         _espvm_ensure_bare "$sdk"
         git -C "$bare_dir" worktree remove "$version_dir" --force 2>/dev/null
@@ -791,7 +862,6 @@ _espvm_remove() {
         fi
         git -C "$bare_dir" worktree prune 2>/dev/null
     else
-        # Matter uses regular clones
         rm -rf "$version_dir"
     fi
 
@@ -827,8 +897,7 @@ _espvm_update() {
 
     echo "Updating $sdk_name $version..."
 
-    if [[ "$sdk" == "idf" ]]; then
-        # IDF uses worktrees with bare repo
+    if _espvm_uses_worktree "$sdk"; then
         local bare_dir="$(_espvm_get_bare_dir "$sdk")"
         _espvm_ensure_bare "$sdk" || return 1
 
@@ -849,7 +918,6 @@ _espvm_update() {
             return 1
         fi
     else
-        # Matter uses regular clones - fetch and reset
         git -C "$version_dir" fetch --depth 1 origin tag "$version" --force 2>/dev/null || \
             git -C "$version_dir" fetch --depth 1 origin "$version" --force
         if [[ $? -ne 0 ]]; then
@@ -867,7 +935,7 @@ _espvm_update() {
             return 1
         fi
 
-        # Re-run checkout_submodules.py for connectedhomeip
+        # Re-run checkout_submodules.py for connectedhomeip (esp-matter specific)
         local chip_dir="$version_dir/connectedhomeip/connectedhomeip"
         if [[ -f "$chip_dir/scripts/checkout_submodules.py" ]]; then
             echo "Updating CHIP submodules..."
@@ -895,10 +963,10 @@ _espvm_current() {
         local encoded_current=$(cat "$current_file")
         local current=$(_espvm_decode_version "$encoded_current")
         echo "Current $sdk_name version: $current"
-        if [[ "$sdk" == "idf" && -n "$IDF_PATH" ]]; then
-            echo "IDF_PATH: $IDF_PATH"
-        elif [[ "$sdk" == "matter" && -n "$ESP_MATTER_PATH" ]]; then
-            echo "ESP_MATTER_PATH: $ESP_MATTER_PATH"
+        local env_var="$(_espvm_get_env_var "$sdk")"
+        local active_path="$(_espvm_get_active_path "$sdk")"
+        if [[ -n "$active_path" ]]; then
+            echo "$env_var: $active_path"
         fi
     else
         echo "No $sdk_name version currently active"
@@ -1053,8 +1121,8 @@ _espvm_sdk_command() {
             _espvm_current "$sdk"
             ;;
         repair)
-            if [[ "$sdk" == "matter" ]]; then
-                _espvm_yellow "Repair not needed for Matter (uses regular clones)"
+            if ! _espvm_uses_worktree "$sdk"; then
+                _espvm_yellow "Repair not needed for ${_ESPVM_SDKS[$sdk]} (uses regular clones)"
                 return 0
             fi
             _espvm_ensure_bare "$sdk" || return 1
@@ -1157,13 +1225,7 @@ espvm() {
             _espvm_current "$sdk"
             ;;
         repair)
-            if [[ "$sdk" == "matter" ]]; then
-                _espvm_yellow "Repair not needed for Matter (uses regular clones)"
-                return 0
-            fi
-            _espvm_ensure_bare "$sdk" || return 1
-            _espvm_repair_worktrees "$sdk"
-            _espvm_green "Worktree links repaired"
+            _espvm_sdk_command "$sdk" "repair"
             ;;
         status)
             _espvm_status
