@@ -1244,6 +1244,112 @@ espvm() {
     esac
 }
 
+# Bash completion for espvm
+_espvm_completions() {
+    local cur prev words cword
+    _init_completion 2>/dev/null || {
+        COMPREPLY=()
+        cur="${COMP_WORDS[COMP_CWORD]}"
+        prev="${COMP_WORDS[COMP_CWORD-1]}"
+        words=("${COMP_WORDS[@]}")
+        cword=$COMP_CWORD
+    }
+
+    # Determine SDK from flags
+    local sdk="idf"
+    local cmd_index=1
+    for ((i=1; i < cword; i++)); do
+        case "${words[i]}" in
+            -i) sdk="idf"; ((cmd_index++)) ;;
+            -m) sdk="matter"; ((cmd_index++)) ;;
+        esac
+    done
+
+    # Get the command (after SDK flag)
+    local cmd=""
+    if [[ $cword -gt $cmd_index ]]; then
+        cmd="${words[cmd_index]}"
+    fi
+
+    # Commands list
+    local commands="i install use ls list remote list-remote rm remove update current repair status config help idf matter"
+    local sdk_flags="-i -m"
+    local config_actions="show set reset"
+    local config_keys="worktree-dir use-ssh"
+
+    # Completing SDK flag or command
+    if [[ $cword -eq 1 ]]; then
+        COMPREPLY=($(compgen -W "$sdk_flags $commands" -- "$cur"))
+        return
+    fi
+
+    # After SDK flag, complete commands
+    if [[ $cword -eq 2 && ("${words[1]}" == "-i" || "${words[1]}" == "-m") ]]; then
+        COMPREPLY=($(compgen -W "$commands" -- "$cur"))
+        return
+    fi
+
+    # Get installed versions for completion
+    _espvm_get_installed_versions() {
+        local sdk="$1"
+        _espvm_load_config 2>/dev/null
+        local sdk_name="${_ESPVM_SDKS[$sdk]}"
+        local worktree_dir="${ESPVM_WORKTREE_DIR:-$HOME/.espressif/versions}"
+        local sdk_dir="$worktree_dir/$sdk_name"
+        if [[ -d "$sdk_dir" ]]; then
+            for dir in "$sdk_dir"/*/; do
+                [[ -d "$dir" ]] || continue
+                local ver=$(basename "$dir")
+                [[ "$ver" == .* ]] && continue
+                echo "$ver"
+            done
+        fi
+    }
+
+    # Command-specific completions
+    case "$cmd" in
+        use|rm|remove|update)
+            local versions=$(_espvm_get_installed_versions "$sdk")
+            COMPREPLY=($(compgen -W "$versions" -- "$cur"))
+            ;;
+        i|install)
+            # Could fetch remote versions but that's slow, just offer flags
+            COMPREPLY=($(compgen -W "-v --verbose -f --force --path" -- "$cur"))
+            ;;
+        config)
+            case "$prev" in
+                config)
+                    COMPREPLY=($(compgen -W "$config_actions" -- "$cur"))
+                    ;;
+                set)
+                    COMPREPLY=($(compgen -W "$config_keys" -- "$cur"))
+                    ;;
+                use-ssh)
+                    COMPREPLY=($(compgen -W "auto yes no" -- "$cur"))
+                    ;;
+            esac
+            ;;
+        idf|matter)
+            # Legacy syntax: espvm idf <cmd>
+            if [[ $prev == "idf" || $prev == "matter" ]]; then
+                COMPREPLY=($(compgen -W "install use list list-remote remove update current repair help" -- "$cur"))
+            else
+                local subcmd="${words[cmd_index+1]}"
+                case "$subcmd" in
+                    use|remove|update)
+                        local target_sdk="$cmd"
+                        local versions=$(_espvm_get_installed_versions "$target_sdk")
+                        COMPREPLY=($(compgen -W "$versions" -- "$cur"))
+                        ;;
+                esac
+            fi
+            ;;
+    esac
+}
+
+# Register completion when sourced
+complete -F _espvm_completions espvm 2>/dev/null
+
 # If script is executed (not sourced), run main function
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     espvm "$@"
