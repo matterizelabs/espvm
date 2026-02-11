@@ -47,6 +47,25 @@ _espvm_green() { echo -e "\033[0;32m$1\033[0m"; }
 _espvm_yellow() { echo -e "\033[0;33m$1\033[0m"; }
 _espvm_blue() { echo -e "\033[0;34m$1\033[0m"; }
 
+# Read user input with a portable prompt (bash/zsh compatible)
+_espvm_prompt() {
+    local prompt="$1"
+    local default="${2:-}"
+    local reply=""
+
+    if [[ -n "$default" ]]; then
+        echo -n "$prompt [$default]: " >&2
+    else
+        echo -n "$prompt" >&2
+    fi
+
+    IFS= read -r reply || true
+    if [[ -z "$reply" && -n "$default" ]]; then
+        reply="$default"
+    fi
+    echo "$reply"
+}
+
 # Get the environment variable name for an SDK
 _espvm_get_env_var() {
     local sdk="$1"
@@ -57,7 +76,11 @@ _espvm_get_env_var() {
 _espvm_get_active_path() {
     local sdk="$1"
     local env_var="${_ESPVM_SDK_ENV_VAR[$sdk]}"
-    echo "${!env_var}"
+    if [[ -n "${ZSH_VERSION:-}" ]]; then
+        echo "${(P)env_var}"
+    else
+        echo "${!env_var}"
+    fi
 }
 
 # Check if SDK is currently active
@@ -193,11 +216,11 @@ _espvm_get_worktree_dir() {
     echo "  [1] ~/.espressif/versions (default)" >&2
     echo "  [2] Custom path" >&2
     echo "" >&2
-    read -p "Choice [1]: " choice
+    choice="$(_espvm_prompt "Choice" "1")"
 
     case "$choice" in
         2)
-            read -p "Enter path: " custom_path
+            custom_path="$(_espvm_prompt "Enter path: ")"
             # Expand ~ and convert to absolute path
             custom_path="${custom_path/#\~/$HOME}"
             if [[ "$custom_path" != /* ]]; then
@@ -664,7 +687,7 @@ _espvm_use() {
     local just_installed=0
     if [[ ! -d "$version_dir" ]]; then
         _espvm_yellow "$sdk_name $version is not installed"
-        read -p "Install it now? [y/N]: " answer
+        answer="$(_espvm_prompt "Install it now? [y/N]: ")"
         if [[ "$answer" =~ ^[Yy]$ ]]; then
             _espvm_install "$sdk" "$version" || return 1
             just_installed=1
@@ -697,7 +720,7 @@ _espvm_use() {
         if [[ $just_installed -eq 1 ]]; then
             return 1
         fi
-        read -p "Run install.sh to fix? [y/N]: " answer
+        answer="$(_espvm_prompt "Run install.sh to fix? [y/N]: ")"
         if [[ "$answer" =~ ^[Yy]$ ]]; then
             _espvm_run_install_fix "$sdk" "$version_dir" || return 1
             echo -n "Retrying activation... "
@@ -717,7 +740,7 @@ _espvm_use() {
             if [[ $just_installed -eq 1 ]]; then
                 return 1
             fi
-            read -p "Run install.sh to fix? [y/N]: " answer
+            answer="$(_espvm_prompt "Run install.sh to fix? [y/N]: ")"
             if [[ "$answer" =~ ^[Yy]$ ]]; then
                 _espvm_run_install_fix "$sdk" "$version_dir" || return 1
                 echo -n "Retrying activation... "
@@ -1348,7 +1371,20 @@ _espvm_completions() {
 }
 
 # Register completion when sourced
-complete -F _espvm_completions espvm 2>/dev/null
+_espvm_register_completion() {
+    if command -v complete >/dev/null 2>&1; then
+        complete -F _espvm_completions espvm 2>/dev/null
+        return
+    fi
+
+    # zsh: enable bash-style completion compatibility
+    if [[ -n "${ZSH_VERSION:-}" ]]; then
+        autoload -Uz bashcompinit 2>/dev/null || return
+        bashcompinit 2>/dev/null || return
+        complete -F _espvm_completions espvm 2>/dev/null
+    fi
+}
+_espvm_register_completion
 
 # If script is executed (not sourced), run main function
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
