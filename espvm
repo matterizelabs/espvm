@@ -1182,6 +1182,9 @@ Commands:
   ls              List installed
   remote          List available
   rm <ver>        Remove version
+  update <ver>    Update installed version
+  current         Show active version
+  repair          Fix broken worktree links
   status          Show active versions
   config          Configuration
 
