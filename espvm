@@ -470,9 +470,31 @@ _espvm_get_worktree_dir() {
 }
 
 # Check if SSH is configured for GitHub
+# Check if SSH is configured for GitHub.
+# Caches the result to avoid repeated SSH probes that leak timing information.
+_ESPVM_SSH_CHECK_RESULT=""
+_ESPVM_SSH_CHECK_TIME=0
+_ESPVM_SSH_CACHE_TTL=300  # Cache for 5 minutes
+
 _espvm_check_ssh() {
-    # Quick test - check if ssh key auth works for github
-    ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1 | grep -q "successfully authenticated"
+    local now
+    now=$(date +%s 2>/dev/null || echo 0)
+
+    # Return cached result if still valid
+    if [[ -n "$_ESPVM_SSH_CHECK_RESULT" && $((now - _ESPVM_SSH_CHECK_TIME)) -lt $_ESPVM_SSH_CACHE_TTL ]]; then
+        [[ "$_ESPVM_SSH_CHECK_RESULT" == "yes" ]]
+        return $?
+    fi
+
+    # Probe SSH and cache the result
+    if ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1 | grep -q "successfully authenticated"; then
+        _ESPVM_SSH_CHECK_RESULT="yes"
+    else
+        _ESPVM_SSH_CHECK_RESULT="no"
+    fi
+    _ESPVM_SSH_CHECK_TIME="$now"
+
+    [[ "$_ESPVM_SSH_CHECK_RESULT" == "yes" ]]
     return $?
 }
 
