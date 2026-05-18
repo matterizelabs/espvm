@@ -289,6 +289,16 @@ _espvm_check_prereqs() {
 
 # Load configuration - parse key=value pairs instead of sourcing to prevent
 # arbitrary code execution if the config file is tampered with
+_espvm_validate_config_value() {
+    # Reject values containing shell metacharacters or command injection patterns
+    # Allow: alphanumeric, slashes, dots, dashes, underscores, spaces, colons, equal signs, tildes
+    if [[ "$1" =~ [\`\$\(\)\{\}\;\<\>\|\&\!] ]]; then
+        echo "Error: Config value contains disallowed characters: $1" >&2
+        return 1
+    fi
+    return 0
+}
+
 _espvm_load_config() {
     # Reset to defaults
     ESPVM_WORKTREE_DIR=""
@@ -309,6 +319,10 @@ _espvm_load_config() {
                 value="${value%\"}"
                 value="${value#\'}"
                 value="${value%\'}"
+                # Validate value for dangerous characters
+                if ! _espvm_validate_config_value "$value"; then
+                    continue  # skip this entry
+                fi
                 case "$key" in
                     ESPVM_WORKTREE_DIR) ESPVM_WORKTREE_DIR="$value" ;;
                     ESPVM_USE_SSH) ESPVM_USE_SSH="$value" ;;
