@@ -66,11 +66,6 @@ _espvm_safe_rm_rf() {
         resolved_target="$(cd "$target" 2>/dev/null && pwd -P)" || resolved_target="$target"
     fi
 
-    # NOTE: We operate on the *resolved* canonical path to prevent TOCTOU attacks.
-    # If $target is a symlink, an attacker could swap it between the resolution
-    # check above and the rm -rf call below. Using the resolved path prevents
-    # a symlink race from redirecting removal to an unsafe location.
-
     # Allow removal under worktree dir (canonical comparison)
     if [[ "$resolved_target" == "$worktree_dir" || "$resolved_target" == "$worktree_dir"/* ]]; then
         rm -rf "$resolved_target"
@@ -315,7 +310,14 @@ _espvm_verify_script_hash() {
             echo "$current_hash" > "$hash_file"
         fi
     else
-        # First encounter: record the hash
+        _espvm_yellow "First run: $label has no recorded hash."
+        _espvm_yellow "  Computed hash: $current_hash"
+        _espvm_yellow "Verify this matches the expected upstream hash before trusting it."
+        local first_answer
+        first_answer="$(_espvm_prompt "Trust this hash? [y/N]: ")"
+        if [[ ! "$first_answer" =~ ^[Yy]$ ]]; then
+            return 1
+        fi
         echo "$current_hash" > "$hash_file"
     fi
 
@@ -550,7 +552,10 @@ _espvm_enforce_secure_git() {
     # Set per-process git config overrides via a temporary config file to avoid
     # polluting the user's global ~/.gitconfig.
     local _espvm_gitconfig
-    _espvm_gitconfig="${TMPDIR:-/tmp}/espvm-gitconfig.$$"
+    _espvm_gitconfig=$(mktemp "${TMPDIR:-/tmp}/espvm-gitconfig.XXXXXX") || {
+        _espvm_red "Error: Failed to create temporary git config file"
+        return 1
+    }
     git config -f "$_espvm_gitconfig" url."https://".insteadOf "git://" 2>/dev/null
     git config -f "$_espvm_gitconfig" protocol.file.allow never 2>/dev/null
     git config -f "$_espvm_gitconfig" protocol.ext.allow never 2>/dev/null
