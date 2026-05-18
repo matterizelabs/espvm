@@ -547,11 +547,14 @@ _espvm_get_repo_url() {
 # Enforce secure git protocols by blocking insecure ones like git://
 # This is set globally for the current process and child processes.
 _espvm_enforce_secure_git() {
-    # Configure git to use HTTPS instead of git:// protocol
-    git config --global url."https://".insteadOf "git://" 2>/dev/null || true
-    # Also block the git:// protocol entirely via the upcoming git security config
-    git config --global protocol.file.allow "never" 2>/dev/null || true
-    git config --global protocol.ext.allow "never" 2>/dev/null || true
+    # Set per-process git config overrides via a temporary config file to avoid
+    # polluting the user's global ~/.gitconfig.
+    local _espvm_gitconfig
+    _espvm_gitconfig="${TMPDIR:-/tmp}/espvm-gitconfig.$$"
+    git config -f "$_espvm_gitconfig" url."https://".insteadOf "git://" 2>/dev/null
+    git config -f "$_espvm_gitconfig" protocol.file.allow never 2>/dev/null
+    git config -f "$_espvm_gitconfig" protocol.ext.allow never 2>/dev/null
+    export GIT_CONFIG_GLOBAL="$_espvm_gitconfig"
 }
 
 # Get the bare repo directory for an SDK
