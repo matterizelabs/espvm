@@ -1074,7 +1074,6 @@ _espvm_run_install() {
     local version_dir="$1"
     local sdk="$2"
     shift 2
-    local install_args="$@"
 
     # Verify install.sh integrity before running
     if ! _espvm_verify_install_integrity "$version_dir"; then
@@ -1092,7 +1091,7 @@ _espvm_run_install() {
         return 1
     fi
 
-    (cd "$version_dir" && _espvm_run_quiet ./install.sh $install_args)
+    (cd "$version_dir" && _espvm_run_quiet ./install.sh "$@")
 }
 
 # Verify that SDK activation succeeded
