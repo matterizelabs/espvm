@@ -15,6 +15,12 @@ _espvm_validate_config_dir() {
         echo "Error: ESPVM_CONFIG_DIR must not contain path traversal sequences: $dir" >&2
         return 1
     fi
+    # Resolve symlinks and canonicalize the path if it exists
+    if [[ -d "$dir" ]]; then
+        local canonical
+        canonical="$(cd "$dir" 2>/dev/null && pwd -P)" || canonical="$dir"
+        dir="$canonical"
+    fi
     # Must be under $HOME or /etc/espvm or similar known-safe locations
     if [[ "$dir" != "$HOME"/* && "$dir" != "/etc/espvm"/* && "$dir" != "/opt/espvm"/* ]]; then
         echo "Warning: ESPVM_CONFIG_DIR is outside typical locations ($HOME, /etc/espvm, /opt/espvm)" >&2
