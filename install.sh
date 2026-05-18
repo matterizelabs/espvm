@@ -3,6 +3,16 @@
 
 set -euo pipefail
 
+# Track temp files for cleanup on exit/interrupt
+_ESPVM_TEMPFILES=""
+_espvm_cleanup() {
+    local f
+    for f in $_ESPVM_TEMPFILES; do
+        rm -f "$f"
+    done
+}
+trap _espvm_cleanup EXIT
+
 ESPVM_INSTALL_DIR="${ESPVM_INSTALL_DIR:-$HOME/.local/bin}"
 ESPVM_SCRIPT_URL="${ESPVM_SCRIPT_URL:-https://raw.githubusercontent.com/matterizelabs/espvm/refs/heads/main/espvm}"
 ESPVM_SHA256_URL="${ESPVM_SHA256_URL:-${ESPVM_SCRIPT_URL}.sha256}"
@@ -95,7 +105,10 @@ if [[ -n "$ESPVM_SHA256_EXPECTED" ]]; then
     green "SHA-256 checksum verified"
 else
     # Try to download and verify against remote .sha256 file
-    sha256_file="${TMPDIR:-/tmp}/espvm-sha256"
+    sha256_file=$(mktemp "${TMPDIR:-/tmp}/espvm-sha256.XXXXXX") || {
+        yellow "Warning: Could not create temp file for SHA-256 verification"
+        sha256_file=""
+    }
     if command -v curl &> /dev/null; then
         if curl -fsSL "$ESPVM_SHA256_URL" -o "$sha256_file" 2>/dev/null; then
             remote_hash=$(cut -d' ' -f1 "$sha256_file" 2>/dev/null || echo "")
@@ -119,13 +132,21 @@ else
             yellow "Warning: Could not download SHA-256 checksum file for verification"
             yellow "Download integrity could not be verified."
         fi
+        # Clean up sha256 temp file
+        if [[ -n "$sha256_file" ]]; then
+            rm -f "$sha256_file"
+            sha256_file=""
+        fi
     fi
 fi
 
 # Verify GPG signature if a signing key is specified
 if [[ -n "$ESPVM_GPG_KEY" ]]; then
     sig_url="${ESPVM_SCRIPT_URL}.sig"
-    sig_file="${TMPDIR:-/tmp}/espvm.sig"
+    sig_file=$(mktemp "${TMPDIR:-/tmp}/espvm-sig.XXXXXX") || {
+        yellow "Warning: Could not create temp file for GPG signature verification"
+        sig_file=""
+    }
     if command -v gpg &>/dev/null; then
         echo "Verifying GPG signature..."
         if curl -fsSL "$sig_url" -o "$sig_file" 2>/dev/null; then
@@ -134,14 +155,17 @@ if [[ -n "$ESPVM_GPG_KEY" ]]; then
             else
                 red "Error: GPG signature verification failed!"
                 red "The download may have been tampered with."
-                rm -f "$ESPVM_INSTALL_DIR/espvm" "$sig_file"
+                rm -f "$ESPVM_INSTALL_DIR/espvm"
                 exit 1
             fi
         else
             yellow "Warning: Could not download GPG signature file"
             yellow "Setting ESPVM_GPG_KEY but no .sig file available at: $sig_url"
         fi
-        rm -f "$sig_file"
+        if [[ -n "$sig_file" ]]; then
+            rm -f "$sig_file"
+            sig_file=""
+        fi
     else
         yellow "Warning: ESPVM_GPG_KEY is set but gpg is not installed. Skipping signature verification."
     fi
