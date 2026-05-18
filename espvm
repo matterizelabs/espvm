@@ -786,7 +786,7 @@ _espvm_maybe_install() {
 
     echo -n "Installing tools for $version... "
     local install_args="$(_espvm_get_install_args "$sdk")"
-    if _espvm_run_install "$version_dir" "$sdk" $install_args; then
+    if _espvm_run_install "$version_dir" "$sdk" "${install_args:-}"; then
         _espvm_green "done"
         return 0
     else
@@ -1046,7 +1046,7 @@ _espvm_run_install_fix() {
     local sdk="$1"
     local version_dir="$2"
     local install_args="$(_espvm_get_install_args "$sdk")"
-    _espvm_run_install "$version_dir" "$sdk" $install_args
+    _espvm_run_install "$version_dir" "$sdk" "${install_args:-}"
 }
 
 # Verify install.sh integrity by checking git status of the checkout
