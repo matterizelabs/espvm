@@ -496,7 +496,7 @@ _espvm_maybe_install() {
 
     echo -n "Installing tools for $version... "
     local install_args="$(_espvm_get_install_args "$sdk")"
-    if (cd "$version_dir" && _espvm_run_quiet ./install.sh $install_args); then
+    if _espvm_run_install "$version_dir" "$sdk" $install_args; then
         _espvm_green "done"
         return 0
     else
@@ -700,6 +700,39 @@ _espvm_run_install_fix() {
     local sdk="$1"
     local version_dir="$2"
     local install_args="$(_espvm_get_install_args "$sdk")"
+    _espvm_run_install "$version_dir" "$sdk" $install_args
+}
+
+# Verify install.sh integrity by checking git status of the checkout
+_espvm_verify_install_integrity() {
+    local version_dir="$1"
+
+    # Verify that install.sh hasn't been modified compared to git
+    if git -C "$version_dir" diff --quiet -- install.sh 2>/dev/null && \
+       git -C "$version_dir" diff --quiet HEAD -- install.sh 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# Run install.sh with safety verification
+_espvm_run_install() {
+    local version_dir="$1"
+    local sdk="$2"
+    shift 2
+    local install_args="$@"
+
+    # Verify install.sh integrity before running
+    if ! _espvm_verify_install_integrity "$version_dir"; then
+        _espvm_yellow "Warning: install.sh has local modifications or is from an unverified commit."
+        _espvm_yellow "Running modified install scripts may be unsafe."
+        local answer
+        answer="$(_espvm_prompt "Run install.sh anyway? [y/N]: ")"
+        if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+            return 1
+        fi
+    fi
+
     (cd "$version_dir" && _espvm_run_quiet ./install.sh $install_args)
 }
 
