@@ -2,8 +2,29 @@
 # espvm - ESP SDK Version Manager
 # Manage multiple ESP-IDF and ESP-Matter versions using git worktree
 
-# Configuration paths
-ESPVM_CONFIG_DIR="${ESPVM_CONFIG_DIR:-$HOME/.espressif/.espvm}"
+# Configuration paths - validate ESPVM_CONFIG_DIR to prevent path traversal
+_espvm_validate_config_dir() {
+    local dir="${ESPVM_CONFIG_DIR:-$HOME/.espressif/.espvm}"
+    # Must be an absolute path
+    if [[ "$dir" != /* ]]; then
+        echo "Error: ESPVM_CONFIG_DIR must be an absolute path, got: $dir" >&2
+        return 1
+    fi
+    # Must not contain path traversal sequences
+    if [[ "$dir" == *"..\""* || "$dir" == *"..'"* || "$dir" == *"/../"* || "$dir" == *"/.." ]]; then
+        echo "Error: ESPVM_CONFIG_DIR must not contain path traversal sequences: $dir" >&2
+        return 1
+    fi
+    # Must be under $HOME or /etc/espvm or similar known-safe locations
+    if [[ "$dir" != "$HOME"/* && "$dir" != "/etc/espvm"/* && "$dir" != "/opt/espvm"/* ]]; then
+        echo "Warning: ESPVM_CONFIG_DIR is outside typical locations ($HOME, /etc/espvm, /opt/espvm)" >&2
+        echo "  Config directory: $dir" >&2
+    fi
+    echo "$dir"
+    return 0
+}
+
+ESPVM_CONFIG_DIR="$(_espvm_validate_config_dir)" || ESPVM_CONFIG_DIR="$HOME/.espressif/.espvm"
 ESPVM_CONFIG_FILE="$ESPVM_CONFIG_DIR/config"
 
 # Global flags
