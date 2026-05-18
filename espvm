@@ -52,20 +52,28 @@ _espvm_safe_rm_rf() {
     worktree_dir="$(_espvm_get_worktree_dir)"
     local config_dir="$ESPVM_CONFIG_DIR"
 
-    # Resolve target if it exists, otherwise use as-is
-    local resolved_target="$target"
-    if [[ -d "$target" ]]; then
-        resolved_target="$(cd "$target" 2>/dev/null && pwd)" || resolved_target="$target"
+    # Resolve worktree_dir and config_dir to canonical paths (follow symlinks)
+    if [[ -d "$worktree_dir" ]]; then
+        worktree_dir="$(cd "$worktree_dir" 2>/dev/null && pwd -P)" || worktree_dir="$(_espvm_get_worktree_dir)"
+    fi
+    if [[ -d "$config_dir" ]]; then
+        config_dir="$(cd "$config_dir" 2>/dev/null && pwd -P)" || config_dir="$ESPVM_CONFIG_DIR"
     fi
 
-    # Allow removal under worktree dir
-    if [[ "$resolved_target" == "$worktree_dir"/* ]]; then
+    # Resolve target if it exists, using pwd -P to follow symlinks
+    local resolved_target="$target"
+    if [[ -d "$target" ]]; then
+        resolved_target="$(cd "$target" 2>/dev/null && pwd -P)" || resolved_target="$target"
+    fi
+
+    # Allow removal under worktree dir (canonical comparison)
+    if [[ "$resolved_target" == "$worktree_dir" || "$resolved_target" == "$worktree_dir"/* ]]; then
         rm -rf "$target"
         return $?
     fi
 
-    # Allow removal under config dir (bare repos)
-    if [[ "$resolved_target" == "$config_dir"/* ]]; then
+    # Allow removal under config dir (canonical comparison)
+    if [[ "$resolved_target" == "$config_dir" || "$resolved_target" == "$config_dir"/* ]]; then
         rm -rf "$target"
         return $?
     fi
