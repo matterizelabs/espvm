@@ -822,7 +822,14 @@ _espvm_install_idf() {
     if git -C "$bare_dir" tag -v "$version" &>/dev/null; then
         _espvm_green "Tag signature verified for $version"
     else
-        _espvm_yellow "Note: Tag $version is not signed or signature could not be verified"
+        _espvm_yellow "Warning: Tag $version is not signed or signature could not be verified"
+        _espvm_yellow "This could indicate a supply-chain attack or an unsigned release."
+        local answer
+        answer="$(_espvm_prompt "Continue with unsigned tag? [y/N]: ")"
+        if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+            _espvm_red "Aborting installation of unsigned tag $version"
+            return 1
+        fi
     fi
 
     # Create worktree
