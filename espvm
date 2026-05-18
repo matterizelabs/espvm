@@ -229,6 +229,62 @@ _espvm_verify_version_origin() {
     return 0
 }
 
+# Compute SHA-256 hash of a file for integrity verification.
+# Returns empty string if no hash tool is available.
+_espvm_sha256() {
+    local file="$1"
+    if command -v sha256sum &>/dev/null; then
+        sha256sum "$file" | cut -d' ' -f1
+    elif command -v shasum &>/dev/null; then
+        shasum -a 256 "$file" | cut -d' ' -f1
+    elif command -v openssl &>/dev/null; then
+        openssl dgst -sha256 "$file" | awk '{print $NF}'
+    else
+        echo ""
+    fi
+}
+
+# Verify and persist the SHA-256 checksum of a script before sourcing/executing it.
+# On first encounter, the hash is recorded. On subsequent runs, the hash is verified.
+# Returns 0 if hash matches or is newly recorded, 1 if mismatch.
+_espvm_verify_script_hash() {
+    local script="$1"
+    local label="$2"  # e.g. "export.sh" or "install.sh"
+    local script_dir
+    script_dir=$(cd "$(dirname "$script")" && pwd)
+    local hash_file="$script_dir/.espvm-${label}.sha256"
+
+    local current_hash
+    current_hash=$(_espvm_sha256 "$script")
+    if [[ -z "$current_hash" ]]; then
+        _espvm_yellow "Warning: Cannot compute SHA-256 for $script (no hash tool available)"
+        return 0  # can't verify, allow by default
+    fi
+
+    if [[ -f "$hash_file" ]]; then
+        local recorded_hash
+        recorded_hash=$(cat "$hash_file")
+        if [[ "$current_hash" != "$recorded_hash" ]]; then
+            _espvm_yellow "Warning: $label has changed since last activation!"
+            _espvm_yellow "  Previously recorded hash: $recorded_hash"
+            _espvm_yellow "  Current hash: $current_hash"
+            _espvm_yellow "This may indicate tampering or an update to the SDK."
+            local answer
+            answer="$(_espvm_prompt "Continue? [y/N]: ")"
+            if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+                return 1
+            fi
+            # Update hash after user confirms
+            echo "$current_hash" > "$hash_file"
+        fi
+    else
+        # First encounter: record the hash
+        echo "$current_hash" > "$hash_file"
+    fi
+
+    return 0
+}
+
 # Source script quietly, capture output for error detection.
 # Includes safety verification before sourcing to mitigate arbitrary code execution.
 _espvm_source_quiet() {
@@ -249,7 +305,14 @@ _espvm_source_quiet() {
         fi
     fi
 
-    local tmpfile=$(mktemp)
+    # Verify script integrity via SHA-256 checksum before sourcing
+    if ! _espvm_verify_script_hash "$script" "export.sh"; then
+        return 1
+    fi
+
+    local tmpfile
+    tmpfile=$(mktemp "${TMPDIR:-/tmp}/espvm.XXXXXX") || return 1
+    chmod 600 "$tmpfile"
     if [[ $_ESPVM_VERBOSE -eq 1 ]]; then
         source "$script"
         local ret=$?
