@@ -1492,6 +1492,23 @@ espvm_config() {
                 if [[ "$value" != /* ]]; then
                     value="$(cd "$value" 2>/dev/null && pwd)" || value="$(pwd)/$value"
                 fi
+                # Block dangerous system paths to prevent accidental data loss
+                local blocked_paths="/ /usr /etc /var /opt /boot /proc /sys /dev /run /snap /bin /sbin /lib"
+                for blocked in $blocked_paths; do
+                    if [[ "$value" == "$blocked" || "$value" == "$blocked/" ]]; then
+                        _espvm_red "Error: Cannot set worktree-dir to a system path: $value"
+                        return 1
+                    fi
+                done
+                # Resolve symlinks for safety
+                if [[ -d "$value" ]]; then
+                    value="$(cd "$value" 2>/dev/null && pwd -P)" || true
+                fi
+                # Must be under user's home directory or a known safe location
+                if [[ "$value" != "$HOME"/* && "$value" != "/tmp"* ]]; then
+                    _espvm_yellow "Warning: worktree-dir is outside \$HOME: $value"
+                    _espvm_yellow "Ensure this path is safe and not a system directory."
+                fi
                 ESPVM_WORKTREE_DIR="$value"
                 _espvm_save_config
                 _espvm_green "worktree-dir set to: $ESPVM_WORKTREE_DIR"
