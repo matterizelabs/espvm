@@ -177,6 +177,11 @@ SOURCE_LINE="source ${safe_install_dir}/espvm"
 if [[ -f "$SHELL_RC" ]] && grep -qF "espvm" "$SHELL_RC"; then
     yellow "espvm already configured in $SHELL_RC"
 else
+    # Create a backup of the shell RC file before modifying it
+    if [[ -f "$SHELL_RC" ]]; then
+        cp "$SHELL_RC" "${SHELL_RC}.espvm.bak"
+        green "Backup of $SHELL_RC saved to ${SHELL_RC}.espvm.bak"
+    fi
     echo "" >> "$SHELL_RC"
     echo "# espvm - ESP SDK Version Manager" >> "$SHELL_RC"
     echo "$SOURCE_LINE" >> "$SHELL_RC"
