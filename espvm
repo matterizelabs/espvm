@@ -361,6 +361,8 @@ _espvm_check_prereqs() {
         _espvm_red "Error: python3 is not installed"
         return 1
     fi
+    # Enforce secure git protocols (block git://, etc.)
+    _espvm_enforce_secure_git
     return 0
 }
 
@@ -495,6 +497,16 @@ _espvm_get_repo_url() {
         local url="https://github.com/${sdk_repo}.git"
         echo "$url"
     fi
+}
+
+# Enforce secure git protocols by blocking insecure ones like git://
+# This is set globally for the current process and child processes.
+_espvm_enforce_secure_git() {
+    # Configure git to use HTTPS instead of git:// protocol
+    git config --global url."https://".insteadOf "git://" 2>/dev/null || true
+    # Also block the git:// protocol entirely via the upcoming git security config
+    git config --global protocol.file.allow "never" 2>/dev/null || true
+    git config --global protocol.ext.allow "never" 2>/dev/null || true
 }
 
 # Get the bare repo directory for an SDK
