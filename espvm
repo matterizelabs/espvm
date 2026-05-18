@@ -174,14 +174,34 @@ _espvm_check_prereqs() {
     return 0
 }
 
-# Load configuration
+# Load configuration - parse key=value pairs instead of sourcing to prevent
+# arbitrary code execution if the config file is tampered with
 _espvm_load_config() {
     # Reset to defaults
     ESPVM_WORKTREE_DIR=""
     ESPVM_USE_SSH="auto"
 
     if [[ -f "$ESPVM_CONFIG_FILE" ]]; then
-        source "$ESPVM_CONFIG_FILE"
+        local key value line
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            # Skip comments and empty lines
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${line// /}" ]] && continue
+            # Only parse simple KEY=VALUE assignments
+            if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+                key="${line%%=*}"
+                value="${line#*=}"
+                # Remove surrounding quotes from value
+                value="${value#\"}"
+                value="${value%\"}"
+                value="${value#\'}"
+                value="${value%\'}"
+                case "$key" in
+                    ESPVM_WORKTREE_DIR) ESPVM_WORKTREE_DIR="$value" ;;
+                    ESPVM_USE_SSH) ESPVM_USE_SSH="$value" ;;
+                esac
+            fi
+        done < "$ESPVM_CONFIG_FILE"
     fi
 }
 
