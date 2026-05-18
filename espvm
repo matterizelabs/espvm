@@ -153,9 +153,25 @@ _espvm_get_env_var() {
 }
 
 # Get the current path for an SDK from its env var
+# Get the current path for an SDK from its env var
+# Uses a whitelist of allowed env var names to prevent arbitrary
+# variable indirection attacks, especially in zsh where (P) can
+# read any variable.
 _espvm_get_active_path() {
     local sdk="$1"
     local env_var="${_ESPVM_SDK_ENV_VAR[$sdk]}"
+
+    # Whitelist of allowed env var names for variable indirection
+    case "$env_var" in
+        IDF_PATH|ESP_MATTER_PATH)
+            # These are the only allowed env vars for SDK paths
+            ;;
+        *)
+            _espvm_red "Error: Unknown SDK env var: $env_var"
+            return 1
+            ;;
+    esac
+
     if [[ -n "${ZSH_VERSION:-}" ]]; then
         echo "${(P)env_var}"
     else
