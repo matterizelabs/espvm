@@ -392,6 +392,46 @@ _espvm_decode_version() {
     fi
 }
 
+# Verify that a Python script in a git checkout hasn't been tampered with
+_espvm_verify_python_script() {
+    local script_path="$1"
+    local script_dir
+    script_dir=$(cd "$(dirname "$script_path")" && pwd)
+
+    # Verify the script hasn't been modified compared to git
+    local script_name
+    script_name=$(basename "$script_path")
+    if git -C "$script_dir" diff --quiet -- "$script_name" 2>/dev/null && \
+       git -C "$script_dir" diff --quiet HEAD -- "$script_name" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# Run a Python script from a cloned repo with integrity verification
+_espvm_run_python_script() {
+    local script_path="$1"
+    shift
+
+    if [[ ! -f "$script_path" ]]; then
+        _espvm_red "Error: Script not found: $script_path"
+        return 1
+    fi
+
+    # Verify script integrity
+    if ! _espvm_verify_python_script "$script_path"; then
+        _espvm_yellow "Warning: $script_path has local modifications or is from an unverified commit."
+        _espvm_yellow "Running modified Python scripts may be unsafe."
+        local answer
+        answer="$(_espvm_prompt "Run this script anyway? [y/N]: ")"
+        if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+            return 1
+        fi
+    fi
+
+    python3 "$script_path" "$@"
+}
+
 # Initialize the bare repository if it doesn't exist
 _espvm_init_bare() {
     local sdk="$1"
@@ -665,7 +705,7 @@ _espvm_install_matter() {
     local chip_dir="$version_dir/connectedhomeip/connectedhomeip"
     if [[ -f "$chip_dir/scripts/checkout_submodules.py" ]]; then
         echo "Checking out CHIP submodules for esp32 linux..."
-        if ! (cd "$chip_dir" && python3 scripts/checkout_submodules.py --platform esp32 linux --shallow); then
+        if ! (cd "$chip_dir" && _espvm_run_python_script "$chip_dir/scripts/checkout_submodules.py" --platform esp32 linux --shallow); then
             _espvm_red "Error: Failed to checkout CHIP submodules"
             rm -rf "$version_dir"
             return 1
@@ -1062,7 +1102,7 @@ _espvm_update() {
         local chip_dir="$version_dir/connectedhomeip/connectedhomeip"
         if [[ -f "$chip_dir/scripts/checkout_submodules.py" ]]; then
             echo "Updating CHIP submodules..."
-            if ! (cd "$chip_dir" && python3 scripts/checkout_submodules.py --platform esp32 linux --shallow); then
+            if ! (cd "$chip_dir" && _espvm_run_python_script "$chip_dir/scripts/checkout_submodules.py" --platform esp32 linux --shallow); then
                 _espvm_red "Error: Failed to update CHIP submodules"
                 return 1
             fi
