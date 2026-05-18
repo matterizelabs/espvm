@@ -563,7 +563,7 @@ _espvm_run_python_script() {
         return 1
     fi
 
-    # Verify script integrity
+    # Verify script integrity via git diff
     if ! _espvm_verify_python_script "$script_path"; then
         _espvm_yellow "Warning: $script_path has local modifications or is from an unverified commit."
         _espvm_yellow "Running modified Python scripts may be unsafe."
@@ -572,6 +572,13 @@ _espvm_run_python_script() {
         if [[ ! "$answer" =~ ^[Yy]$ ]]; then
             return 1
         fi
+    fi
+
+    # Verify script checksum against previously recorded hash
+    local script_name
+    script_name=$(basename "$script_path")
+    if ! _espvm_verify_script_hash "$script_path" "python-${script_name}"; then
+        return 1
     fi
 
     python3 "$script_path" "$@"
