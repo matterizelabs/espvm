@@ -8,6 +8,11 @@ ESPVM_SCRIPT_URL="${ESPVM_SCRIPT_URL:-https://raw.githubusercontent.com/matteriz
 ESPVM_SHA256_URL="${ESPVM_SHA256_URL:-${ESPVM_SCRIPT_URL}.sha256}"
 # Set to a known SHA-256 hash to verify the download. Empty skips verification.
 ESPVM_SHA256_EXPECTED="${ESPVM_SHA256_EXPECTED:-}"
+# Set to a GPG key fingerprint to verify the download signature. Empty skips GPG verification.
+ESPVM_GPG_KEY="${ESPVM_GPG_KEY:-}"
+# Pin to a specific commit hash instead of using a branch ref for reproducibility.
+# When set, the URL is rewritten to use this commit instead of refs/heads/main.
+ESPVM_COMMIT_REF="${ESPVM_COMMIT_REF:-}"
 
 # Colors
 red() { echo -e "\033[0;31m$1\033[0m"; }
@@ -22,6 +27,15 @@ if [[ "$ESPVM_SCRIPT_URL" != https://* ]]; then
     red "Error: ESPVM_SCRIPT_URL must use HTTPS: $ESPVM_SCRIPT_URL"
     red "Refusing to download over insecure connection."
     exit 1
+fi
+
+# If a specific commit ref is pinned, rewrite the URL for reproducibility.
+# This prevents supply-chain attacks from compromised branch refs.
+if [[ -n "$ESPVM_COMMIT_REF" ]]; then
+    # Replace refs/heads/<branch> or refs/tags/<tag> with the pinned commit
+    ESPVM_SCRIPT_URL=$(echo "$ESPVM_SCRIPT_URL" | sed -E "s|/refs/(heads|tags)/[^/]+|/$ESPVM_COMMIT_REF|")
+    ESPVM_SHA256_URL="${ESPVM_SCRIPT_URL}.sha256"
+    echo "Pinned to commit: $ESPVM_COMMIT_REF"
 fi
 
 # Check for required tools
@@ -105,6 +119,31 @@ else
             yellow "Warning: Could not download SHA-256 checksum file for verification"
             yellow "Download integrity could not be verified."
         fi
+    fi
+fi
+
+# Verify GPG signature if a signing key is specified
+if [[ -n "$ESPVM_GPG_KEY" ]]; then
+    sig_url="${ESPVM_SCRIPT_URL}.sig"
+    sig_file="${TMPDIR:-/tmp}/espvm.sig"
+    if command -v gpg &>/dev/null; then
+        echo "Verifying GPG signature..."
+        if curl -fsSL "$sig_url" -o "$sig_file" 2>/dev/null; then
+            if gpg --verify "$sig_file" "$ESPVM_INSTALL_DIR/espvm" 2>/dev/null; then
+                green "GPG signature verified"
+            else
+                red "Error: GPG signature verification failed!"
+                red "The download may have been tampered with."
+                rm -f "$ESPVM_INSTALL_DIR/espvm" "$sig_file"
+                exit 1
+            fi
+        else
+            yellow "Warning: Could not download GPG signature file"
+            yellow "Setting ESPVM_GPG_KEY but no .sig file available at: $sig_url"
+        fi
+        rm -f "$sig_file"
+    else
+        yellow "Warning: ESPVM_GPG_KEY is set but gpg is not installed. Skipping signature verification."
     fi
 fi
 
