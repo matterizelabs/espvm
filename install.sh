@@ -5,6 +5,9 @@ set -e
 
 ESPVM_INSTALL_DIR="${ESPVM_INSTALL_DIR:-$HOME/.local/bin}"
 ESPVM_SCRIPT_URL="${ESPVM_SCRIPT_URL:-https://raw.githubusercontent.com/matterizelabs/espvm/refs/heads/main/espvm}"
+ESPVM_SHA256_URL="${ESPVM_SHA256_URL:-${ESPVM_SCRIPT_URL}.sha256}"
+# Set to a known SHA-256 hash to verify the download. Empty skips verification.
+ESPVM_SHA256_EXPECTED="${ESPVM_SHA256_EXPECTED:-}"
 
 # Colors
 red() { echo -e "\033[0;31m$1\033[0m"; }
@@ -13,6 +16,13 @@ yellow() { echo -e "\033[0;33m$1\033[0m"; }
 
 echo "Installing espvm - ESP SDK Version Manager"
 echo ""
+
+# Validate that script URL uses HTTPS (prevent MITM)
+if [[ "$ESPVM_SCRIPT_URL" != https://* ]]; then
+    red "Error: ESPVM_SCRIPT_URL must use HTTPS: $ESPVM_SCRIPT_URL"
+    red "Refusing to download over insecure connection."
+    exit 1
+fi
 
 # Check for required tools
 if ! command -v git &> /dev/null; then
@@ -39,6 +49,65 @@ else
     exit 1
 fi
 
+# Verify download integrity via SHA-256 checksum
+_espvm_sha256() {
+    if command -v sha256sum &> /dev/null; then
+        sha256sum "$1" | cut -d' ' -f1
+    elif command -v shasum &> /dev/null; then
+        shasum -a 256 "$1" | cut -d' ' -f1
+    elif command -v openssl &> /dev/null; then
+        openssl dgst -sha256 "$1" | cut -d' ' -f"${#2}"
+    else
+        echo ""
+    fi
+}
+
+# Try to verify with expected hash (if set via env)
+if [[ -n "$ESPVM_SHA256_EXPECTED" ]]; then
+    actual_hash=$(_espvm_sha256 "$ESPVM_INSTALL_DIR/espvm")
+    if [[ -z "$actual_hash" ]]; then
+        red "Error: No SHA-256 tool available (sha256sum, shasum, openssl) for verification"
+        rm -f "$ESPVM_INSTALL_DIR/espvm"
+        exit 1
+    fi
+    if [[ "$actual_hash" != "$ESPVM_SHA256_EXPECTED" ]]; then
+        red "Error: SHA-256 checksum mismatch!"
+        red "  Expected: $ESPVM_SHA256_EXPECTED"
+        red "  Actual:   $actual_hash"
+        red "The downloaded file may have been tampered with."
+        rm -f "$ESPVM_INSTALL_DIR/espvm"
+        exit 1
+    fi
+    green "SHA-256 checksum verified"
+else
+    # Try to download and verify against remote .sha256 file
+    sha256_file="${TMPDIR:-/tmp}/espvm-sha256"
+    if command -v curl &> /dev/null; then
+        if curl -fsSL "$ESPVM_SHA256_URL" -o "$sha256_file" 2>/dev/null; then
+            remote_hash=$(cut -d' ' -f1 "$sha256_file" 2>/dev/null || echo "")
+            actual_hash=$(_espvm_sha256 "$ESPVM_INSTALL_DIR/espvm")
+            if [[ -n "$remote_hash" && -n "$actual_hash" && "$remote_hash" != "$actual_hash" ]]; then
+                yellow "Warning: SHA-256 checksum mismatch with remote .sha256 file"
+                yellow "  Remote: $remote_hash"
+                yellow "  Actual: $actual_hash"
+                yellow "This may indicate a network issue or tampering. Proceed with caution."
+                answer=""
+                read -rp "Continue anyway? [y/N]: " answer
+                if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+                    rm -f "$ESPVM_INSTALL_DIR/espvm" "$sha256_file"
+                    exit 1
+                fi
+            elif [[ -n "$remote_hash" && -n "$actual_hash" ]]; then
+                green "SHA-256 checksum verified against remote"
+            fi
+            rm -f "$sha256_file"
+        else
+            yellow "Warning: Could not download SHA-256 checksum file for verification"
+            yellow "Download integrity could not be verified."
+        fi
+    fi
+fi
+
 # Make executable
 chmod +x "$ESPVM_INSTALL_DIR/espvm"
 
@@ -62,8 +131,9 @@ case "$SHELL_NAME" in
         ;;
 esac
 
-# Add source line if not already present
-SOURCE_LINE="source \"$ESPVM_INSTALL_DIR/espvm\""
+# Add source line if not already present (use printf %q to prevent injection)
+safe_install_dir=$(printf '%q' "$ESPVM_INSTALL_DIR")
+SOURCE_LINE="source ${safe_install_dir}/espvm"
 
 if [[ -f "$SHELL_RC" ]] && grep -qF "espvm" "$SHELL_RC"; then
     yellow "espvm already configured in $SHELL_RC"
