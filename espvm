@@ -400,7 +400,9 @@ _espvm_get_repo_url() {
     if [[ "$use_ssh" == "yes" ]]; then
         echo "git@github.com:${sdk_repo}.git"
     else
-        echo "https://github.com/${sdk_repo}.git"
+        # Enforce HTTPS for git operations to prevent MITM attacks
+        local url="https://github.com/${sdk_repo}.git"
+        echo "$url"
     fi
 }
 
@@ -508,6 +510,11 @@ _espvm_init_bare() {
     if [[ ! -d "$bare_dir" ]]; then
         echo "Initializing $sdk_name repository..."
         mkdir -p "$(dirname "$bare_dir")"
+        # Warn if not using HTTPS or SSH (prevent insecure protocols)
+        if [[ "$repo_url" != https://* && "$repo_url" != git@* && "$repo_url" != ssh://* ]]; then
+            _espvm_yellow "Warning: Repository URL does not use HTTPS or SSH: $repo_url"
+            _espvm_yellow "Insecure connections may be vulnerable to man-in-the-middle attacks."
+        fi
         git clone --bare "$repo_url" "$bare_dir"
         if [[ $? -ne 0 ]]; then
             _espvm_red "Error: Failed to clone $sdk_name repository"
@@ -757,6 +764,12 @@ _espvm_install_matter() {
     _espvm_check_sdk_deps "matter" || return 1
 
     mkdir -p "$sdk_dir"
+
+    # Verify the repo URL uses a secure protocol
+    if [[ "$repo_url" != https://* && "$repo_url" != git@* && "$repo_url" != ssh://* ]]; then
+        _espvm_yellow "Warning: Repository URL does not use HTTPS or SSH: $repo_url"
+        _espvm_yellow "Insecure connections may be vulnerable to man-in-the-middle attacks."
+    fi
 
     # Clone with specific branch/tag (use -- to separate options from refs)
     echo "Cloning $version..."
@@ -1017,6 +1030,11 @@ _espvm_list_remote() {
     local sdk="$1"
     local sdk_name="${_ESPVM_SDKS[$sdk]}"
     local repo_url="$(_espvm_get_repo_url "$sdk")"
+
+    # Warn if not using a secure protocol
+    if [[ "$repo_url" != https://* && "$repo_url" != git@* && "$repo_url" != ssh://* ]]; then
+        _espvm_yellow "Warning: Using insecure protocol for git operations: $repo_url"
+    fi
 
     echo "Fetching available $sdk_name versions..."
     echo ""
