@@ -702,26 +702,33 @@ _espvm_install_idf() {
     # Initialize bare repo if needed
     _espvm_init_bare "idf" || return 1
 
-    # Fetch the specific tag/branch
+    # Fetch the specific tag/branch (use -- to prevent version from being interpreted as a flag)
     echo "Fetching $version..."
-    if ! git -C "$bare_dir" fetch origin tag "$version" --no-tags 2>/dev/null; then
+    if ! git -C "$bare_dir" fetch origin -- tag "$version" --no-tags 2>/dev/null; then
         echo "Not a tag, trying as branch..."
-        git -C "$bare_dir" fetch origin "$version"
+        git -C "$bare_dir" fetch origin -- "$version"
         if [[ $? -ne 0 ]]; then
             _espvm_red "Error: Failed to fetch $version (does this version exist?)"
             return 1
         fi
     fi
 
+    # Verify tag signature if possible
+    if git -C "$bare_dir" tag -v "$version" &>/dev/null; then
+        _espvm_green "Tag signature verified for $version"
+    else
+        _espvm_yellow "Note: Tag $version is not signed or signature could not be verified"
+    fi
+
     # Create worktree
     echo "Creating worktree for $version..."
     mkdir -p "$sdk_dir"
     git -C "$bare_dir" worktree prune 2>/dev/null
-    if ! git -C "$bare_dir" worktree add "$version_dir" "$version" 2>/dev/null; then
+    if ! git -C "$bare_dir" worktree add -- "$version_dir" "$version" 2>/dev/null; then
         _espvm_yellow "Cleaning up stale worktree reference..."
         git -C "$bare_dir" worktree remove "$version_dir" --force 2>/dev/null
         git -C "$bare_dir" worktree prune 2>/dev/null
-        git -C "$bare_dir" worktree add "$version_dir" "$version"
+        git -C "$bare_dir" worktree add -- "$version_dir" "$version"
         if [[ $? -ne 0 ]]; then
             _espvm_red "Error: Failed to create worktree"
             return 1
@@ -751,9 +758,9 @@ _espvm_install_matter() {
 
     mkdir -p "$sdk_dir"
 
-    # Clone with specific branch/tag
+    # Clone with specific branch/tag (use -- to separate options from refs)
     echo "Cloning $version..."
-    if ! git clone --depth 1 --branch "$version" "$repo_url" "$version_dir" 2>/dev/null; then
+    if ! git clone --depth 1 --branch "$version" -- "$repo_url" "$version_dir" 2>/dev/null; then
         _espvm_red "Error: Failed to clone $version (does this version exist?)"
         return 1
     fi
@@ -1130,14 +1137,14 @@ _espvm_update() {
         local bare_dir="$(_espvm_get_bare_dir "$sdk")"
         _espvm_ensure_bare "$sdk" || return 1
 
-        git -C "$bare_dir" fetch origin tag "$version" --force 2>/dev/null || \
-            git -C "$bare_dir" fetch origin "$version" --force
+        git -C "$bare_dir" fetch origin -- tag "$version" --force 2>/dev/null || \
+            git -C "$bare_dir" fetch origin -- "$version" --force
         if [[ $? -ne 0 ]]; then
             _espvm_red "Error: Failed to fetch updates"
             return 1
         fi
 
-        git -C "$version_dir" checkout "$version"
+        git -C "$version_dir" checkout -- "$version"
         git -C "$version_dir" reset --hard "$version"
 
         echo "Updating submodules..."
@@ -1147,14 +1154,14 @@ _espvm_update() {
             return 1
         fi
     else
-        git -C "$version_dir" fetch --depth 1 origin tag "$version" --force 2>/dev/null || \
-            git -C "$version_dir" fetch --depth 1 origin "$version" --force
+        git -C "$version_dir" fetch --depth 1 origin -- tag "$version" --force 2>/dev/null || \
+            git -C "$version_dir" fetch --depth 1 origin -- "$version" --force
         if [[ $? -ne 0 ]]; then
             _espvm_red "Error: Failed to fetch updates"
             return 1
         fi
 
-        git -C "$version_dir" checkout "$version"
+        git -C "$version_dir" checkout -- "$version"
         git -C "$version_dir" reset --hard "$version"
 
         echo "Updating submodules..."
