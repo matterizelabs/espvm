@@ -538,6 +538,28 @@ _espvm_get_current_file() {
     echo "$sdk_dir/.current"
 }
 
+# Validate version string to prevent injection of git options or shell commands
+_espvm_validate_version() {
+    local version="$1"
+    # Reject empty strings
+    if [[ -z "$version" ]]; then
+        _espvm_red "Error: Version cannot be empty"
+        return 1
+    fi
+    # Reject strings starting with - (could be interpreted as git options)
+    if [[ "$version" == -* ]]; then
+        _espvm_red "Error: Version cannot start with '-': $version"
+        return 1
+    fi
+    # Only allow alphanumeric, dots, dashes, underscores, and slashes (for branches like release/v5.0)
+    if [[ ! "$version" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+        _espvm_red "Error: Version contains invalid characters: $version"
+        _espvm_red "Allowed: letters, numbers, dots, dashes, underscores, slashes"
+        return 1
+    fi
+    return 0
+}
+
 # Normalize version string (add 'v' prefix if missing for tags)
 _espvm_normalize_version() {
     local version="$1"
@@ -774,6 +796,7 @@ _espvm_install() {
     _espvm_check_prereqs || return 1
 
     local sdk_name="${_ESPVM_SDKS[$sdk]}"
+    _espvm_validate_version "$version" || return 1
     version=$(_espvm_normalize_version "$version")
     local encoded_version=$(_espvm_encode_version "$version")
     local sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
@@ -1063,6 +1086,7 @@ _espvm_use() {
     fi
 
     local sdk_name="${_ESPVM_SDKS[$sdk]}"
+    _espvm_validate_version "$version" || return 1
     version=$(_espvm_normalize_version "$version")
     local encoded_version=$(_espvm_encode_version "$version")
     local sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
@@ -1243,6 +1267,7 @@ _espvm_remove() {
     fi
 
     local sdk_name="${_ESPVM_SDKS[$sdk]}"
+    _espvm_validate_version "$version" || return 1
     version=$(_espvm_normalize_version "$version")
     local encoded_version=$(_espvm_encode_version "$version")
     local sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
@@ -1298,6 +1323,7 @@ _espvm_update() {
     fi
 
     local sdk_name="${_ESPVM_SDKS[$sdk]}"
+    _espvm_validate_version "$version" || return 1
     version=$(_espvm_normalize_version "$version")
     local encoded_version=$(_espvm_encode_version "$version")
     local sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
