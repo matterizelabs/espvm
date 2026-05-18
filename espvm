@@ -921,17 +921,52 @@ _espvm_install_matter() {
 }
 
 # Clear SDK environment variables and PATH entries
+# Uses exact matching (anchored) to avoid accidentally removing paths
+# that merely contain the SDK path as a substring.
+_espvm_path_remove() {
+    # Remove exact path entries from PATH, not substring matches
+    local remove="$1"
+    local new_path=""
+    local IFS=':'
+    local entry
+    for entry in $PATH; do
+        if [[ "$entry" != "$remove" ]]; then
+            new_path="${new_path:+$new_path:}$entry"
+        fi
+    done
+    echo "$new_path"
+}
+
 _espvm_clear_sdk_env() {
     local sdk="$1"
     local active_path="$(_espvm_get_active_path "$sdk")"
     if [[ -n "$active_path" ]]; then
-        PATH=$(echo "$PATH" | tr ':' '\n' | grep -vF "$active_path" | tr '\n' ':')
-        PATH="${PATH%:}"
+        PATH=$(_espvm_path_remove "$active_path")
+        # Also remove any subdirectories of the active path
+        local IFS=':'
+        local new_path=""
+        local entry
+        for entry in $PATH; do
+            if [[ "$entry" != "$active_path"/* ]]; then
+                new_path="${new_path:+$new_path:}$entry"
+            fi
+        done
+        PATH="$new_path"
     fi
 
     if [[ "$sdk" == "idf" ]]; then
-        [[ -n "$IDF_TOOLS_PATH" ]] && PATH=$(echo "$PATH" | tr ':' '\n' | grep -vF "$IDF_TOOLS_PATH" | tr '\n' ':')
-        PATH="${PATH%:}"
+        if [[ -n "$IDF_TOOLS_PATH" ]]; then
+            PATH=$(_espvm_path_remove "$IDF_TOOLS_PATH")
+            local IFS=':'
+            local new_path=""
+            local entry
+            for entry in $PATH; do
+                if [[ "$entry" != "$IDF_TOOLS_PATH"/* ]]; then
+                    new_path="${new_path:+$new_path:}$entry"
+                fi
+            done
+            PATH="$new_path"
+        fi
         unset IDF_PATH IDF_PYTHON_ENV_PATH IDF_TOOLS_PATH IDF_COMPONENT_MANAGER_URL
         unset OPENOCD_SCRIPTS ESP_IDF_VERSION ESP_ROM_ELF_DIR
         unset ESP_MATTER_PATH  # Matter depends on IDF
