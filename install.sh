@@ -182,9 +182,31 @@ else
         cp "$SHELL_RC" "${SHELL_RC}.espvm.bak"
         green "Backup of $SHELL_RC saved to ${SHELL_RC}.espvm.bak"
     fi
-    echo "" >> "$SHELL_RC"
-    echo "# espvm - ESP SDK Version Manager" >> "$SHELL_RC"
-    echo "$SOURCE_LINE" >> "$SHELL_RC"
+
+    # Write atomically using a temp file to prevent corruption on disk-full
+    rc_tmpfile=$(mktemp "${TMPDIR:-/tmp}/espvm-rc.XXXXXX") || {
+        red "Error: Failed to create temp file for RC modification"
+        exit 1
+    }
+    chmod 600 "$rc_tmpfile"
+    if [[ -f "$SHELL_RC" ]]; then
+        cat "$SHELL_RC" > "$rc_tmpfile"
+    fi
+    echo "" >> "$rc_tmpfile"
+    echo "# espvm - ESP SDK Version Manager" >> "$rc_tmpfile"
+    echo "$SOURCE_LINE" >> "$rc_tmpfile"
+
+    # Atomic move to final location
+    if ! mv "$rc_tmpfile" "$SHELL_RC"; then
+        red "Error: Failed to update $SHELL_RC"
+        rm -f "$rc_tmpfile"
+        # Try to restore from backup
+        if [[ -f "${SHELL_RC}.espvm.bak" ]]; then
+            yellow "Attempting to restore from backup..."
+            cp "${SHELL_RC}.espvm.bak" "$SHELL_RC"
+        fi
+        exit 1
+    fi
     green "Added espvm to $SHELL_RC"
 fi
 
