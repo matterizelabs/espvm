@@ -30,6 +30,51 @@ ESPVM_CONFIG_FILE="$ESPVM_CONFIG_DIR/config"
 # Global flags
 _ESPVM_VERBOSE=0
 
+# Safe directory removal: validate paths before rm -rf to prevent
+# accidental deletion of system directories if config is tampered with
+_espvm_safe_rm_rf() {
+    local target="$1"
+
+    # Must not be root, empty, or a system path
+    if [[ -z "$target" || "$target" == "/" || "$target" == "/usr" || "$target" == "/etc" || "$target" == "/var" || "$target" == "/opt" || "$target" == "/home" || "$target" == "$HOME" ]]; then
+        _espvm_red "Error: Refusing to remove directory: $target"
+        return 1
+    fi
+
+    # Must be under known safe prefixes: worktree dir or config dir
+    local worktree_dir
+    worktree_dir="$(_espvm_get_worktree_dir)"
+    local config_dir="$ESPVM_CONFIG_DIR"
+
+    # Resolve target if it exists, otherwise use as-is
+    local resolved_target="$target"
+    if [[ -d "$target" ]]; then
+        resolved_target="$(cd "$target" 2>/dev/null && pwd)" || resolved_target="$target"
+    fi
+
+    # Allow removal under worktree dir
+    if [[ "$resolved_target" == "$worktree_dir"/* ]]; then
+        rm -rf "$target"
+        return $?
+    fi
+
+    # Allow removal under config dir (bare repos)
+    if [[ "$resolved_target" == "$config_dir"/* ]]; then
+        rm -rf "$target"
+        return $?
+    fi
+
+    # Allow removal if target starts with expected SDK pattern
+    if [[ "$resolved_target" == *"/esp-idf/"* || "$resolved_target" == *"/esp-matter/"* ]]; then
+        rm -rf "$target"
+        return $?
+    fi
+
+    # Reject anything else
+    _espvm_red "Error: Refusing to remove directory outside safe locations: $target"
+    return 1
+}
+
 # SDK configurations
 declare -A _ESPVM_SDKS=(
     [idf]="esp-idf"
@@ -718,7 +763,7 @@ _espvm_install_matter() {
     git -C "$version_dir" submodule update --init --depth 1
     if [[ $? -ne 0 ]]; then
         _espvm_red "Error: Failed to initialize submodules"
-        rm -rf "$version_dir"
+        _espvm_safe_rm_rf "$version_dir"
         return 1
     fi
 
@@ -728,7 +773,7 @@ _espvm_install_matter() {
         echo "Checking out CHIP submodules for esp32 linux..."
         if ! (cd "$chip_dir" && _espvm_run_python_script "$chip_dir/scripts/checkout_submodules.py" --platform esp32 linux --shallow); then
             _espvm_red "Error: Failed to checkout CHIP submodules"
-            rm -rf "$version_dir"
+            _espvm_safe_rm_rf "$version_dir"
             return 1
         fi
     fi
@@ -1042,11 +1087,11 @@ _espvm_remove() {
         _espvm_ensure_bare "$sdk"
         git -C "$bare_dir" worktree remove "$version_dir" --force 2>/dev/null
         if [[ $? -ne 0 ]]; then
-            rm -rf "$version_dir"
+            _espvm_safe_rm_rf "$version_dir"
         fi
         git -C "$bare_dir" worktree prune 2>/dev/null
     else
-        rm -rf "$version_dir"
+        _espvm_safe_rm_rf "$version_dir"
     fi
 
     # Clear current if removed
