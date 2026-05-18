@@ -70,7 +70,7 @@ _espvm_sha256() {
     elif command -v shasum &> /dev/null; then
         shasum -a 256 "$1" | cut -d' ' -f1
     elif command -v openssl &> /dev/null; then
-        openssl dgst -sha256 "$1" | cut -d' ' -f"${#2}"
+        openssl dgst -sha256 "$1" | awk '{print $NF}'
     else
         echo ""
     fi
