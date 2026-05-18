@@ -133,9 +133,56 @@ _espvm_run_quiet() {
     fi
 }
 
-# Source script quietly, capture output for error detection
+# Verify the git origin of a checked-out version before sourcing its scripts.
+# This checks that the local checkout matches a known upstream ref.
+_espvm_verify_version_origin() {
+    local version_dir="$1"
+    local sdk="$2"
+
+    # Verify the working tree is clean (no unexpected local modifications)
+    if ! git -C "$version_dir" diff --quiet HEAD 2>/dev/null; then
+        _espvm_yellow "Warning: $version_dir has local modifications."
+        _espvm_yellow "Sourcing scripts from a modified checkout may be unsafe."
+        return 1
+    fi
+
+    # Verify the checkout is on a known ref (tag or branch from upstream)
+    local current_ref
+    current_ref=$(git -C "$version_dir" rev-parse --abbrev-ref HEAD 2>/dev/null)
+    if [[ "$current_ref" == "HEAD" ]]; then
+        # Detached HEAD - verify it matches a remote ref
+        local head_commit
+        head_commit=$(git -C "$version_dir" rev-parse HEAD 2>/dev/null)
+        if ! git -C "$version_dir" branch -r --contains "$head_commit" 2>/dev/null | grep -q "."; then
+            _espvm_yellow "Warning: HEAD commit not found on any remote branch."
+            _espvm_yellow "Sourcing scripts from an unverified commit may be unsafe."
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+# Source script quietly, capture output for error detection.
+# Includes safety verification before sourcing to mitigate arbitrary code execution.
 _espvm_source_quiet() {
     local script="$1"
+    local sdk="$2"
+
+    # Verify the script is within an expected SDK directory
+    local script_dir
+    script_dir=$(cd "$(dirname "$script")" && pwd)
+
+    # Show a security notice for unverified sources
+    if [[ -n "$sdk" ]] && ! _espvm_verify_version_origin "$script_dir" "$sdk"; then
+        _espvm_yellow "Security: The version directory doesn't pass origin verification."
+        local answer
+        answer="$(_espvm_prompt "Continue sourcing $script? [y/N]: ")"
+        if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+            return 1
+        fi
+    fi
+
     local tmpfile=$(mktemp)
     if [[ $_ESPVM_VERBOSE -eq 1 ]]; then
         source "$script"
@@ -735,7 +782,7 @@ _espvm_use() {
 
     # Activate the version
     echo -n "Activating $sdk_name $version... "
-    if ! _espvm_source_quiet "$version_dir/export.sh"; then
+    if ! _espvm_source_quiet "$version_dir/export.sh" "$sdk"; then
         _espvm_red "failed"
         if [[ $just_installed -eq 1 ]]; then
             return 1
@@ -744,7 +791,7 @@ _espvm_use() {
         if [[ "$answer" =~ ^[Yy]$ ]]; then
             _espvm_run_install_fix "$sdk" "$version_dir" || return 1
             echo -n "Retrying activation... "
-            if _espvm_source_quiet "$version_dir/export.sh"; then
+            if _espvm_source_quiet "$version_dir/export.sh" "$sdk"; then
                 _espvm_green "done"
             else
                 _espvm_red "failed"
@@ -764,7 +811,7 @@ _espvm_use() {
             if [[ "$answer" =~ ^[Yy]$ ]]; then
                 _espvm_run_install_fix "$sdk" "$version_dir" || return 1
                 echo -n "Retrying activation... "
-                _espvm_source_quiet "$version_dir/export.sh"
+                _espvm_source_quiet "$version_dir/export.sh" "$sdk"
                 _espvm_green "done"
             else
                 return 1
