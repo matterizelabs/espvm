@@ -66,21 +66,26 @@ _espvm_safe_rm_rf() {
         resolved_target="$(cd "$target" 2>/dev/null && pwd -P)" || resolved_target="$target"
     fi
 
+    # NOTE: We operate on the *resolved* canonical path to prevent TOCTOU attacks.
+    # If $target is a symlink, an attacker could swap it between the resolution
+    # check above and the rm -rf call below. Using the resolved path prevents
+    # a symlink race from redirecting removal to an unsafe location.
+
     # Allow removal under worktree dir (canonical comparison)
     if [[ "$resolved_target" == "$worktree_dir" || "$resolved_target" == "$worktree_dir"/* ]]; then
-        rm -rf "$target"
+        rm -rf "$resolved_target"
         return $?
     fi
 
     # Allow removal under config dir (canonical comparison)
     if [[ "$resolved_target" == "$config_dir" || "$resolved_target" == "$config_dir"/* ]]; then
-        rm -rf "$target"
+        rm -rf "$resolved_target"
         return $?
     fi
 
     # Allow removal if target starts with expected SDK pattern
     if [[ "$resolved_target" == *"/esp-idf/"* || "$resolved_target" == *"/esp-matter/"* ]]; then
-        rm -rf "$target"
+        rm -rf "$resolved_target"
         return $?
     fi
 
