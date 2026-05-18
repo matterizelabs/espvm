@@ -1,7 +1,7 @@
 #!/bin/bash
 # espvm installer - curl -fsSL <url>/install.sh | bash
 
-set -e
+set -euo pipefail
 
 ESPVM_INSTALL_DIR="${ESPVM_INSTALL_DIR:-$HOME/.local/bin}"
 ESPVM_SCRIPT_URL="${ESPVM_SCRIPT_URL:-https://raw.githubusercontent.com/matterizelabs/espvm/refs/heads/main/espvm}"
@@ -154,7 +154,7 @@ green "espvm installed to $ESPVM_INSTALL_DIR/espvm"
 echo ""
 
 # Detect shell and config file
-SHELL_NAME=$(basename "$SHELL")
+SHELL_NAME=$(basename "${SHELL:-/bin/bash}")
 SHELL_RC=""
 
 case "$SHELL_NAME" in
