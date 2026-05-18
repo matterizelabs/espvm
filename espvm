@@ -936,6 +936,11 @@ _espvm_run_install() {
         fi
     fi
 
+    # Verify install.sh checksum matches previously recorded hash
+    if ! _espvm_verify_script_hash "$version_dir/install.sh" "install.sh"; then
+        return 1
+    fi
+
     (cd "$version_dir" && _espvm_run_quiet ./install.sh $install_args)
 }
 
