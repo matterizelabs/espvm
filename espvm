@@ -196,7 +196,9 @@ _espvm_check_sdk_deps() {
 
 # Run command quietly, show output on error or if verbose
 _espvm_run_quiet() {
-    local tmpfile=$(mktemp)
+    local tmpfile
+    tmpfile=$(mktemp "${TMPDIR:-/tmp}/espvm.XXXXXX") || return 1
+    chmod 600 "$tmpfile"
     if [[ $_ESPVM_VERBOSE -eq 1 ]]; then
         "$@"
         local ret=$?
