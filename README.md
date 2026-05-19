@@ -61,3 +61,11 @@ Config stored at `~/.espressif/.espvm/config`
 
 - git
 - python3
+
+## Development
+
+After cloning, enable the pre-commit hook to auto-regenerate the SHA-256 digest:
+
+```bash
+git config core.hooksPath hooks
+```
