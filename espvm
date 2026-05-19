@@ -1,442 +1,199 @@
 #!/bin/bash
 # espvm - ESP SDK Version Manager
-# Manage multiple ESP-IDF and ESP-Matter versions using git worktree
 
-# Configuration paths - validate ESPVM_CONFIG_DIR to prevent path traversal
+# ── Config ──
+
 _espvm_validate_config_dir() {
     local dir="${ESPVM_CONFIG_DIR:-$HOME/.espressif/.espvm}"
-    # Must be an absolute path
-    if [[ "$dir" != /* ]]; then
-        echo "Error: ESPVM_CONFIG_DIR must be an absolute path, got: $dir" >&2
-        return 1
-    fi
-    # Must not contain path traversal sequences
-    if [[ "$dir" == *"..\""* || "$dir" == *"..'"* || "$dir" == *"/../"* || "$dir" == *"/.." ]]; then
-        echo "Error: ESPVM_CONFIG_DIR must not contain path traversal sequences: $dir" >&2
-        return 1
-    fi
-    # Resolve symlinks and canonicalize the path if it exists
+    [[ "$dir" != /* ]] && { echo "Error: ESPVM_CONFIG_DIR must be absolute: $dir" >&2; return 1; }
+    [[ "$dir" == *"..\""* || "$dir" == *"..'"* || "$dir" == *"/../"* || "$dir" == *"/.." ]] && \
+        { echo "Error: ESPVM_CONFIG_DIR contains path traversal: $dir" >&2; return 1; }
     if [[ -d "$dir" ]]; then
         local canonical
         canonical="$(cd "$dir" 2>/dev/null && pwd -P)" || canonical="$dir"
         dir="$canonical"
     fi
-    # Must be under $HOME or /etc/espvm or similar known-safe locations
-    if [[ "$dir" != "$HOME"/* && "$dir" != "/etc/espvm"/* && "$dir" != "/opt/espvm"/* ]]; then
-        echo "Warning: ESPVM_CONFIG_DIR is outside typical locations ($HOME, /etc/espvm, /opt/espvm)" >&2
-        echo "  Config directory: $dir" >&2
-    fi
+    [[ "$dir" != "$HOME"/* && "$dir" != "/etc/espvm"/* && "$dir" != "/opt/espvm"/* ]] && \
+        echo "Warning: ESPVM_CONFIG_DIR outside typical locations: $dir" >&2
     echo "$dir"
-    return 0
 }
 
 ESPVM_CONFIG_DIR="$(_espvm_validate_config_dir)" || ESPVM_CONFIG_DIR="$HOME/.espressif/.espvm"
 ESPVM_CONFIG_FILE="$ESPVM_CONFIG_DIR/config"
-
-# Global flags
 _ESPVM_VERBOSE=0
 
-# Safe directory removal: validate paths before rm -rf to prevent
-# accidental deletion of system directories if config is tampered with
-_espvm_safe_rm_rf() {
-    local target="$1"
+# ── SDK Definitions ──
 
-    # Must not be root, empty, or a system path
-    if [[ -z "$target" || "$target" == "/" || "$target" == "/usr" || "$target" == "/etc" || "$target" == "/var" || "$target" == "/opt" || "$target" == "/home" || "$target" == "$HOME" ]]; then
-        _espvm_red "Error: Refusing to remove directory: $target"
-        return 1
-    fi
+declare -A _ESPVM_SDKS=([idf]="esp-idf" [matter]="esp-matter")
+declare -A _ESPVM_SDK_REPOS=([idf]="espressif/esp-idf" [matter]="espressif/esp-matter")
+declare -A _ESPVM_SDK_ENV_VAR=([idf]="IDF_PATH" [matter]="ESP_MATTER_PATH")
+declare -A _ESPVM_SDK_INSTALL_ARGS=([idf]="" [matter]="--no-host-tool")
+declare -A _ESPVM_SDK_USE_WORKTREE=([idf]=1 [matter]=0)
+declare -A _ESPVM_SDK_REQUIRES=([idf]="" [matter]="idf")
 
-    # Must be under known safe prefixes: worktree dir or config dir
-    local worktree_dir
-    worktree_dir="$(_espvm_get_worktree_dir)"
-    local config_dir="$ESPVM_CONFIG_DIR"
+# ── Output & Prompts ──
 
-    # Resolve worktree_dir and config_dir to canonical paths (follow symlinks)
-    if [[ -d "$worktree_dir" ]]; then
-        worktree_dir="$(cd "$worktree_dir" 2>/dev/null && pwd -P)" || worktree_dir="$(_espvm_get_worktree_dir)"
-    fi
-    if [[ -d "$config_dir" ]]; then
-        config_dir="$(cd "$config_dir" 2>/dev/null && pwd -P)" || config_dir="$ESPVM_CONFIG_DIR"
-    fi
-
-    # Resolve target if it exists, using pwd -P to follow symlinks
-    local resolved_target="$target"
-    if [[ -d "$target" ]]; then
-        resolved_target="$(cd "$target" 2>/dev/null && pwd -P)" || resolved_target="$target"
-    fi
-
-    # Allow removal under worktree dir (canonical comparison)
-    if [[ "$resolved_target" == "$worktree_dir" || "$resolved_target" == "$worktree_dir"/* ]]; then
-        rm -rf "$resolved_target"
-        return $?
-    fi
-
-    # Allow removal under config dir (canonical comparison)
-    if [[ "$resolved_target" == "$config_dir" || "$resolved_target" == "$config_dir"/* ]]; then
-        rm -rf "$resolved_target"
-        return $?
-    fi
-
-    # Allow removal if target starts with expected SDK pattern
-    if [[ "$resolved_target" == *"/esp-idf/"* || "$resolved_target" == *"/esp-matter/"* ]]; then
-        rm -rf "$resolved_target"
-        return $?
-    fi
-
-    # Reject anything else
-    _espvm_red "Error: Refusing to remove directory outside safe locations: $target"
-    return 1
-}
-
-# SDK configurations
-declare -A _ESPVM_SDKS=(
-    [idf]="esp-idf"
-    [matter]="esp-matter"
-)
-
-declare -A _ESPVM_SDK_REPOS=(
-    [idf]="espressif/esp-idf"
-    [matter]="espressif/esp-matter"
-)
-
-# SDK-specific configurations
-declare -A _ESPVM_SDK_ENV_VAR=(
-    [idf]="IDF_PATH"
-    [matter]="ESP_MATTER_PATH"
-)
-
-declare -A _ESPVM_SDK_INSTALL_ARGS=(
-    [idf]=""
-    [matter]="--no-host-tool"
-)
-
-declare -A _ESPVM_SDK_USE_WORKTREE=(
-    [idf]=1
-    [matter]=0
-)
-
-declare -A _ESPVM_SDK_REQUIRES=(
-    [idf]=""
-    [matter]="idf"
-)
-
-# Colors for output
-_espvm_red() { echo -e "\033[0;31m$1\033[0m"; }
-_espvm_green() { echo -e "\033[0;32m$1\033[0m"; }
+_espvm_red()    { echo -e "\033[0;31m$1\033[0m"; }
+_espvm_green()  { echo -e "\033[0;32m$1\033[0m"; }
 _espvm_yellow() { echo -e "\033[0;33m$1\033[0m"; }
-_espvm_blue() { echo -e "\033[0;34m$1\033[0m"; }
+_espvm_blue()   { echo -e "\033[0;34m$1\033[0m"; }
 
-# Read user input with a portable prompt (bash/zsh compatible)
 _espvm_prompt() {
-    local prompt="$1"
-    local default="${2:-}"
-    local reply=""
-
+    local prompt="$1" default="${2:-}" reply=""
     if [[ -n "$default" ]]; then
         echo -n "$prompt [$default]: " >&2
     else
         echo -n "$prompt" >&2
     fi
-
     IFS= read -r reply || true
-    if [[ -z "$reply" && -n "$default" ]]; then
-        reply="$default"
-    fi
+    [[ -z "$reply" && -n "$default" ]] && reply="$default"
     echo "$reply"
 }
 
-# Get the environment variable name for an SDK
-_espvm_get_env_var() {
-    local sdk="$1"
-    echo "${_ESPVM_SDK_ENV_VAR[$sdk]}"
+_espvm_confirm() {
+    local answer
+    echo -n "$1 [y/N]: " >&2
+    IFS= read -r answer || true
+    [[ "$answer" =~ ^[Yy]$ ]]
 }
 
-# Get the current path for an SDK from its env var
-# Get the current path for an SDK from its env var
-# Uses a whitelist of allowed env var names to prevent arbitrary
-# variable indirection attacks, especially in zsh where (P) can
-# read any variable.
-_espvm_get_active_path() {
-    local sdk="$1"
-    local env_var="${_ESPVM_SDK_ENV_VAR[$sdk]}"
+# ── Security & Validation ──
 
-    # Whitelist of allowed env var names for variable indirection
-    case "$env_var" in
-        IDF_PATH|ESP_MATTER_PATH)
-            # These are the only allowed env vars for SDK paths
-            ;;
-        *)
-            _espvm_red "Error: Unknown SDK env var: $env_var"
-            return 1
-            ;;
-    esac
-
-    if [[ -n "${ZSH_VERSION:-}" ]]; then
-        echo "${(P)env_var}"
-    else
-        echo "${!env_var}"
+_espvm_safe_rm_rf() {
+    local target="$1"
+    if [[ -z "$target" || "$target" == "/" || "$target" == "/usr" || "$target" == "/etc" || \
+          "$target" == "/var" || "$target" == "/opt" || "$target" == "/home" || "$target" == "$HOME" ]]; then
+        _espvm_red "Error: Refusing to remove: $target"; return 1
     fi
+    local worktree_dir config_dir resolved_target="$target"
+    worktree_dir="$(_espvm_get_worktree_dir)"
+    config_dir="$ESPVM_CONFIG_DIR"
+    [[ -d "$worktree_dir" ]] && worktree_dir="$(cd "$worktree_dir" 2>/dev/null && pwd -P)" || worktree_dir="$(_espvm_get_worktree_dir)"
+    [[ -d "$config_dir" ]] && config_dir="$(cd "$config_dir" 2>/dev/null && pwd -P)" || config_dir="$ESPVM_CONFIG_DIR"
+    [[ -d "$target" ]] && resolved_target="$(cd "$target" 2>/dev/null && pwd -P)" || resolved_target="$target"
+
+    [[ "$resolved_target" == "$worktree_dir" || "$resolved_target" == "$worktree_dir"/* ]] && { rm -rf "$resolved_target"; return $?; }
+    [[ "$resolved_target" == "$config_dir" || "$resolved_target" == "$config_dir"/* ]] && { rm -rf "$resolved_target"; return $?; }
+    [[ "$resolved_target" == *"/esp-idf/"* || "$resolved_target" == *"/esp-matter/"* ]] && { rm -rf "$resolved_target"; return $?; }
+    _espvm_red "Error: Refusing to remove directory outside safe locations: $target"; return 1
 }
 
-# Check if SDK is currently active
-_espvm_is_active() {
-    local sdk="$1"
-    [[ -n "$(_espvm_get_active_path "$sdk")" ]]
-}
-
-# Check if SDK uses worktrees
-_espvm_uses_worktree() {
-    local sdk="$1"
-    [[ "${_ESPVM_SDK_USE_WORKTREE[$sdk]}" == "1" ]]
-}
-
-# Get install.sh arguments for SDK
-_espvm_get_install_args() {
-    local sdk="$1"
-    echo "${_ESPVM_SDK_INSTALL_ARGS[$sdk]}"
-}
-
-# Check SDK dependencies
-_espvm_check_sdk_deps() {
-    local sdk="$1"
-    local requires="${_ESPVM_SDK_REQUIRES[$sdk]}"
-    if [[ -n "$requires" ]] && ! _espvm_is_active "$requires"; then
-        local req_name="${_ESPVM_SDKS[$requires]}"
-        _espvm_red "Error: ${_ESPVM_SDKS[$sdk]} requires $req_name to be active"
-        echo "Run 'espvm use <version>' first"
-        return 1
-    fi
+_espvm_validate_version() {
+    local version="$1"
+    [[ -z "$version" ]] && { _espvm_red "Error: Version cannot be empty"; return 1; }
+    [[ "$version" == -* ]] && { _espvm_red "Error: Version cannot start with '-': $version"; return 1; }
+    [[ ! "$version" =~ ^[a-zA-Z0-9._/-]+$ ]] && { _espvm_red "Error: Invalid characters in version: $version"; return 1; }
     return 0
 }
 
-# Run command quietly, show output on error or if verbose
-_espvm_run_quiet() {
-    local tmpfile
-    tmpfile=$(mktemp "${TMPDIR:-/tmp}/espvm.XXXXXX") || return 1
-    chmod 600 "$tmpfile"
-    if [[ $_ESPVM_VERBOSE -eq 1 ]]; then
-        "$@"
-        local ret=$?
-        rm -f "$tmpfile"
-        return $ret
-    else
-        "$@" > "$tmpfile" 2>&1
-        local ret=$?
-        if [[ $ret -ne 0 ]]; then
-            cat "$tmpfile"
-        fi
-        rm -f "$tmpfile"
-        return $ret
-    fi
-}
-
-# Verify the git origin of a checked-out version before sourcing its scripts.
-# This checks that the local checkout matches a known upstream ref.
-_espvm_verify_version_origin() {
-    local version_dir="$1"
-    local sdk="$2"
-
-    # Verify the working tree is clean (no unexpected local modifications)
-    if ! git -C "$version_dir" diff --quiet HEAD 2>/dev/null; then
-        _espvm_yellow "Warning: $version_dir has local modifications."
-        _espvm_yellow "Sourcing scripts from a modified checkout may be unsafe."
-        return 1
-    fi
-
-    # Verify the checkout is on a known ref (tag or branch from upstream)
-    local current_ref
-    current_ref=$(git -C "$version_dir" rev-parse --abbrev-ref HEAD 2>/dev/null)
-    if [[ "$current_ref" == "HEAD" ]]; then
-        # Detached HEAD - verify it matches a remote ref
-        local head_commit
-        head_commit=$(git -C "$version_dir" rev-parse HEAD 2>/dev/null)
-        if ! git -C "$version_dir" branch -r --contains "$head_commit" 2>/dev/null | grep -q "."; then
-            _espvm_yellow "Warning: HEAD commit not found on any remote branch."
-            _espvm_yellow "Sourcing scripts from an unverified commit may be unsafe."
-            return 1
-        fi
-    fi
-
+_espvm_validate_config_value() {
+    [[ "$1" =~ [\`\$\(\)\{\}\;\<\>\|\&\!] ]] && { echo "Error: Config value contains disallowed characters: $1" >&2; return 1; }
     return 0
 }
 
-# Compute SHA-256 hash of a file for integrity verification.
-# Returns empty string if no hash tool is available.
+_espvm_enforce_secure_git() {
+    local gitconfig
+    gitconfig="$(mktemp "${TMPDIR:-/tmp}/espvm-gitconfig.XXXXXX")" || { _espvm_red "Error: Failed to create temp git config"; return 1; }
+    git config -f "$gitconfig" url."https://".insteadOf "git://" 2>/dev/null
+    git config -f "$gitconfig" protocol.file.allow never 2>/dev/null
+    git config -f "$gitconfig" protocol.ext.allow never 2>/dev/null
+    export GIT_CONFIG_GLOBAL="$gitconfig"
+}
+
 _espvm_sha256() {
     local file="$1"
-    if command -v sha256sum &>/dev/null; then
-        sha256sum "$file" | cut -d' ' -f1
-    elif command -v shasum &>/dev/null; then
-        shasum -a 256 "$file" | cut -d' ' -f1
-    elif command -v openssl &>/dev/null; then
-        openssl dgst -sha256 "$file" | awk '{print $NF}'
-    else
-        echo ""
+    if command -v sha256sum &>/dev/null; then sha256sum "$file" | cut -d' ' -f1
+    elif command -v shasum &>/dev/null; then shasum -a 256 "$file" | cut -d' ' -f1
+    elif command -v openssl &>/dev/null; then openssl dgst -sha256 "$file" | awk '{print $NF}'
+    else echo ""
     fi
 }
 
-# Verify and persist the SHA-256 checksum of a script before sourcing/executing it.
-# On first encounter, the hash is recorded. On subsequent runs, the hash is verified.
-# Returns 0 if hash matches or is newly recorded, 1 if mismatch.
 _espvm_verify_script_hash() {
-    local script="$1"
-    local label="$2"  # e.g. "export.sh" or "install.sh"
-    local script_dir
-    script_dir=$(cd "$(dirname "$script")" && pwd)
+    local script="$1" label="$2"
+    local script_dir; script_dir="$(cd "$(dirname "$script")" && pwd)"
     local hash_file="$script_dir/.espvm-${label}.sha256"
+    local current_hash; current_hash="$(_espvm_sha256 "$script")"
 
-    local current_hash
-    current_hash=$(_espvm_sha256 "$script")
     if [[ -z "$current_hash" ]]; then
-        _espvm_yellow "Warning: Cannot compute SHA-256 for $script (no hash tool available)"
-        return 0  # can't verify, allow by default
+        _espvm_yellow "Warning: Cannot compute SHA-256 for $script"; return 0
     fi
-
     if [[ -f "$hash_file" ]]; then
-        local recorded_hash
-        recorded_hash=$(cat "$hash_file")
+        local recorded_hash; recorded_hash="$(cat "$hash_file")"
         if [[ "$current_hash" != "$recorded_hash" ]]; then
             _espvm_yellow "Warning: $label has changed since last activation!"
-            _espvm_yellow "  Previously recorded hash: $recorded_hash"
-            _espvm_yellow "  Current hash: $current_hash"
-            _espvm_yellow "This may indicate tampering or an update to the SDK."
-            local answer
-            answer="$(_espvm_prompt "Continue? [y/N]: ")"
-            if [[ ! "$answer" =~ ^[Yy]$ ]]; then
-                return 1
-            fi
-            # Update hash after user confirms
+            _espvm_yellow "  Previous: $recorded_hash"
+            _espvm_yellow "  Current:  $current_hash"
+            _espvm_confirm "Continue?" || return 1
             echo "$current_hash" > "$hash_file"
         fi
     else
-        _espvm_yellow "First run: $label has no recorded hash."
-        _espvm_yellow "  Computed hash: $current_hash"
-        _espvm_yellow "Verify this matches the expected upstream hash before trusting it."
-        local first_answer
-        first_answer="$(_espvm_prompt "Trust this hash? [y/N]: ")"
-        if [[ ! "$first_answer" =~ ^[Yy]$ ]]; then
-            return 1
-        fi
+        _espvm_yellow "First run: $label has no recorded hash ($current_hash)"
+        _espvm_confirm "Trust this hash?" || return 1
         echo "$current_hash" > "$hash_file"
     fi
-
     return 0
 }
 
-# Source script quietly, capture output for error detection.
-# Includes safety verification before sourcing to mitigate arbitrary code execution.
-_espvm_source_quiet() {
-    local script="$1"
-    local sdk="$2"
-
-    # Verify the script is within an expected SDK directory
-    local script_dir
-    script_dir=$(cd "$(dirname "$script")" && pwd)
-
-    # Show a security notice for unverified sources
-    if [[ -n "$sdk" ]] && ! _espvm_verify_version_origin "$script_dir" "$sdk"; then
-        _espvm_yellow "Security: The version directory doesn't pass origin verification."
-        local answer
-        answer="$(_espvm_prompt "Continue sourcing $script? [y/N]: ")"
-        if [[ ! "$answer" =~ ^[Yy]$ ]]; then
-            return 1
+_espvm_verify_version_origin() {
+    local version_dir="$1"
+    if ! git -C "$version_dir" diff --quiet HEAD 2>/dev/null; then
+        _espvm_yellow "Warning: $version_dir has local modifications."
+        _espvm_confirm "Continue sourcing?" || return 1
+    fi
+    local current_ref; current_ref="$(git -C "$version_dir" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    if [[ "$current_ref" == "HEAD" ]]; then
+        local head_commit; head_commit="$(git -C "$version_dir" rev-parse HEAD 2>/dev/null)"
+        if ! git -C "$version_dir" branch -r --contains "$head_commit" 2>/dev/null | grep -q "."; then
+            _espvm_yellow "Warning: HEAD commit not found on any remote branch."
+            _espvm_confirm "Continue?" || return 1
         fi
     fi
-
-    # Verify script integrity via SHA-256 checksum before sourcing
-    if ! _espvm_verify_script_hash "$script" "export.sh"; then
-        return 1
-    fi
-
-    local tmpfile
-    tmpfile=$(mktemp "${TMPDIR:-/tmp}/espvm.XXXXXX") || return 1
-    chmod 600 "$tmpfile"
-    if [[ $_ESPVM_VERBOSE -eq 1 ]]; then
-        source "$script"
-        local ret=$?
-        rm -f "$tmpfile"
-        return $ret
-    else
-        source "$script" > "$tmpfile" 2>&1
-        local ret=$?
-        # Check for failure indicators
-        if grep -qE "(FAILED|ERROR:)" "$tmpfile"; then
-            cat "$tmpfile"
-            rm -f "$tmpfile"
-            return 1
-        fi
-        rm -f "$tmpfile"
-        return $ret
-    fi
+    return 0
 }
 
-# Check if a command exists
-_espvm_command_exists() {
-    command -v "$1" >/dev/null 2>&1
+_espvm_verify_install_integrity() {
+    git -C "$1" diff --quiet -- install.sh 2>/dev/null && \
+    git -C "$1" diff --quiet HEAD -- install.sh 2>/dev/null
 }
 
-# Ensure prerequisites are met
+_espvm_verify_python_script() {
+    local script_path="$1"
+    local script_dir; script_dir="$(cd "$(dirname "$script_path")" && pwd)"
+    local script_name; script_name="$(basename "$script_path")"
+    git -C "$script_dir" diff --quiet -- "$script_name" 2>/dev/null && \
+    git -C "$script_dir" diff --quiet HEAD -- "$script_name" 2>/dev/null
+}
+
 _espvm_check_prereqs() {
-    if ! _espvm_command_exists git; then
-        _espvm_red "Error: git is not installed"
-        return 1
-    fi
-    if ! _espvm_command_exists python3; then
-        _espvm_red "Error: python3 is not installed"
-        return 1
-    fi
-    # Enforce secure git protocols (block git://, etc.)
+    command -v git &>/dev/null || { _espvm_red "Error: git is not installed"; return 1; }
+    command -v python3 &>/dev/null || { _espvm_red "Error: python3 is not installed"; return 1; }
     _espvm_enforce_secure_git
-    return 0
 }
 
-# Load configuration - parse key=value pairs instead of sourcing to prevent
-# arbitrary code execution if the config file is tampered with
-_espvm_validate_config_value() {
-    # Reject values containing shell metacharacters or command injection patterns
-    # Allow: alphanumeric, slashes, dots, dashes, underscores, spaces, colons, equal signs, tildes
-    if [[ "$1" =~ [\`\$\(\)\{\}\;\<\>\|\&\!] ]]; then
-        echo "Error: Config value contains disallowed characters: $1" >&2
-        return 1
-    fi
-    return 0
-}
+# ── Config Management ──
 
 _espvm_load_config() {
-    # Reset to defaults
     ESPVM_WORKTREE_DIR=""
     ESPVM_USE_SSH="auto"
-
-    if [[ -f "$ESPVM_CONFIG_FILE" ]]; then
-        local key value line
-        while IFS= read -r line || [[ -n "$line" ]]; do
-            # Skip comments and empty lines
-            [[ "$line" =~ ^[[:space:]]*# ]] && continue
-            [[ -z "${line// /}" ]] && continue
-            # Only parse simple KEY=VALUE assignments
-            if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
-                key="${line%%=*}"
-                value="${line#*=}"
-                # Remove surrounding quotes from value
-                value="${value#\"}"
-                value="${value%\"}"
-                value="${value#\'}"
-                value="${value%\'}"
-                # Validate value for dangerous characters
-                if ! _espvm_validate_config_value "$value"; then
-                    continue  # skip this entry
-                fi
-                case "$key" in
-                    ESPVM_WORKTREE_DIR) ESPVM_WORKTREE_DIR="$value" ;;
-                    ESPVM_USE_SSH) ESPVM_USE_SSH="$value" ;;
-                esac
-            fi
-        done < "$ESPVM_CONFIG_FILE"
-    fi
+    [[ ! -f "$ESPVM_CONFIG_FILE" ]] && return 0
+    local key value line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line// /}" ]] && continue
+        if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+            key="${line%%=*}"; value="${line#*=}"
+            value="${value#\"}"; value="${value%\"}"
+            value="${value#\'}"; value="${value%\'}"
+            _espvm_validate_config_value "$value" || continue
+            case "$key" in
+                ESPVM_WORKTREE_DIR) ESPVM_WORKTREE_DIR="$value" ;;
+                ESPVM_USE_SSH) ESPVM_USE_SSH="$value" ;;
+            esac
+        fi
+    done < "$ESPVM_CONFIG_FILE"
 }
 
-# Save configuration
 _espvm_save_config() {
     mkdir -p "$ESPVM_CONFIG_DIR"
     cat > "$ESPVM_CONFIG_FILE" << EOF
@@ -445,411 +202,257 @@ ESPVM_USE_SSH="$ESPVM_USE_SSH"
 EOF
 }
 
-# Get worktree directory, prompting user if not configured
+# ── Path & Version Helpers ──
+
+_espvm_get_active_path() {
+    local sdk="$1" env_var="${_ESPVM_SDK_ENV_VAR[$sdk]}"
+    case "$env_var" in
+        IDF_PATH|ESP_MATTER_PATH) ;;
+        *) _espvm_red "Error: Unknown SDK env var: $env_var"; return 1 ;;
+    esac
+    if [[ -n "${ZSH_VERSION:-}" ]]; then echo "${(P)env_var}"
+    else echo "${!env_var}"
+    fi
+}
+
+_espvm_is_active() { [[ -n "$(_espvm_get_active_path "$1")" ]]; }
+_espvm_uses_worktree() { [[ "${_ESPVM_SDK_USE_WORKTREE[$1]}" == "1" ]]; }
+_espvm_normalize_version() { if [[ "$1" =~ ^[0-9] ]]; then echo "v$1"; else echo "$1"; fi; }
+_espvm_encode_version() { echo "${1//\//-}"; }
+_espvm_decode_version() { if [[ "$1" == release-* ]]; then echo "${1/release-/release\/}"; else echo "$1"; fi; }
+_espvm_get_bare_dir() { echo "$ESPVM_CONFIG_DIR/${_ESPVM_SDKS[$1]}.bare"; }
+_espvm_get_sdk_dir() { echo "$(_espvm_get_worktree_dir)/${_ESPVM_SDKS[$1]}"; }
+_espvm_get_current_file() { echo "$(_espvm_get_sdk_dir "$1")/.current"; }
+
 _espvm_get_worktree_dir() {
-    # Check command line override first
-    if [[ -n "$_ESPVM_WORKTREE_FLAG" ]]; then
-        echo "$_ESPVM_WORKTREE_FLAG"
-        return
-    fi
-
+    [[ -n "$_ESPVM_WORKTREE_FLAG" ]] && { echo "$_ESPVM_WORKTREE_FLAG"; return; }
     _espvm_load_config
-
-    # Return if already configured
-    if [[ -n "$ESPVM_WORKTREE_DIR" ]]; then
-        echo "$ESPVM_WORKTREE_DIR"
-        return
-    fi
-
-    # First time - ask user (print to stderr so it's not captured)
-    echo "" >&2
-    _espvm_blue "First-time setup: Where would you like to store ESP SDK versions?" >&2
+    [[ -n "$ESPVM_WORKTREE_DIR" ]] && { echo "$ESPVM_WORKTREE_DIR"; return; }
+    echo "" >&2; _espvm_blue "First-time setup: Where to store ESP SDK versions?" >&2
     echo "  [1] ~/.espressif/versions (default)" >&2
-    echo "  [2] Custom path" >&2
-    echo "" >&2
-    choice="$(_espvm_prompt "Choice" "1")"
-
+    echo "  [2] Custom path" >&2; echo "" >&2
+    local choice; choice="$(_espvm_prompt "Choice" "1")"
     case "$choice" in
         2)
-            custom_path="$(_espvm_prompt "Enter path: ")"
-            # Expand ~ and convert to absolute path
+            local custom_path; custom_path="$(_espvm_prompt "Enter path:")"
             custom_path="${custom_path/#\~/$HOME}"
-            if [[ "$custom_path" != /* ]]; then
-                custom_path="$(cd "$custom_path" 2>/dev/null && pwd)" || custom_path="$(pwd)/$custom_path"
-            fi
-            ESPVM_WORKTREE_DIR="$custom_path"
-            ;;
-        *)
-            ESPVM_WORKTREE_DIR="$HOME/.espressif/versions"
-            ;;
+            [[ "$custom_path" != /* ]] && custom_path="$(cd "$custom_path" 2>/dev/null && pwd)" || custom_path="$(pwd)/$custom_path"
+            ESPVM_WORKTREE_DIR="$custom_path" ;;
+        *) ESPVM_WORKTREE_DIR="$HOME/.espressif/versions" ;;
     esac
-
-    # Save to config
     _espvm_save_config
     _espvm_green "Configuration saved to $ESPVM_CONFIG_FILE" >&2
     echo "" >&2
-
     echo "$ESPVM_WORKTREE_DIR"
 }
 
-# Check if SSH is configured for GitHub
-# Check if SSH is configured for GitHub.
-# Caches the result to avoid repeated SSH probes that leak timing information.
-_ESPVM_SSH_CHECK_RESULT=""
-_ESPVM_SSH_CHECK_TIME=0
-_ESPVM_SSH_CACHE_TTL=300  # Cache for 5 minutes
+# ── SSH & Repository ──
+
+_ESPVM_SSH_CHECK_RESULT="" _ESPVM_SSH_CHECK_TIME=0 _ESPVM_SSH_CACHE_TTL=300
 
 _espvm_check_ssh() {
-    local now
-    now=$(date +%s 2>/dev/null || echo 0)
-
-    # Return cached result if still valid
+    local now; now="$(date +%s 2>/dev/null || echo 0)"
     if [[ -n "$_ESPVM_SSH_CHECK_RESULT" && $((now - _ESPVM_SSH_CHECK_TIME)) -lt $_ESPVM_SSH_CACHE_TTL ]]; then
-        [[ "$_ESPVM_SSH_CHECK_RESULT" == "yes" ]]
-        return $?
+        [[ "$_ESPVM_SSH_CHECK_RESULT" == "yes" ]]; return $?
     fi
-
-    # Probe SSH and cache the result
     if ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1 | grep -q "successfully authenticated"; then
         _ESPVM_SSH_CHECK_RESULT="yes"
     else
         _ESPVM_SSH_CHECK_RESULT="no"
     fi
     _ESPVM_SSH_CHECK_TIME="$now"
-
     [[ "$_ESPVM_SSH_CHECK_RESULT" == "yes" ]]
-    return $?
 }
 
-# Get repository URL for an SDK
 _espvm_get_repo_url() {
-    local sdk="$1"  # idf or matter
-    local sdk_repo="${_ESPVM_SDK_REPOS[$sdk]}"
-
+    local sdk="$1" sdk_repo="${_ESPVM_SDK_REPOS[$sdk]}"
     _espvm_load_config
     local use_ssh="${ESPVM_USE_SSH:-auto}"
-
     if [[ "$use_ssh" == "auto" ]]; then
-        if _espvm_check_ssh; then
-            use_ssh="yes"
-        else
-            use_ssh="no"
+        _espvm_check_ssh && use_ssh="yes" || use_ssh="no"
+    fi
+    if [[ "$use_ssh" == "yes" ]]; then echo "git@github.com:${sdk_repo}.git"
+    else echo "https://github.com/${sdk_repo}.git"
+    fi
+}
+
+# ── Quiet Execution ──
+
+_espvm_run_quiet() {
+    local tmpfile; tmpfile="$(mktemp "${TMPDIR:-/tmp}/espvm.XXXXXX")" || return 1
+    chmod 600 "$tmpfile"
+    if [[ $_ESPVM_VERBOSE -eq 1 ]]; then
+        "$@"; local ret=$?; rm -f "$tmpfile"; return $ret
+    else
+        "$@" > "$tmpfile" 2>&1; local ret=$?
+        [[ $ret -ne 0 ]] && cat "$tmpfile"
+        rm -f "$tmpfile"; return $ret
+    fi
+}
+
+_espvm_source_quiet() {
+    local script="$1" sdk="$2"
+    local script_dir; script_dir="$(cd "$(dirname "$script")" && pwd)"
+    if [[ -n "$sdk" ]] && ! _espvm_verify_version_origin "$script_dir" "$sdk"; then
+        _espvm_confirm "Continue sourcing $script?" || return 1
+    fi
+    _espvm_verify_script_hash "$script" "export.sh" || return 1
+    local tmpfile; tmpfile="$(mktemp "${TMPDIR:-/tmp}/espvm.XXXXXX")" || return 1
+    chmod 600 "$tmpfile"
+    if [[ $_ESPVM_VERBOSE -eq 1 ]]; then
+        source "$script"; local ret=$?; rm -f "$tmpfile"; return $ret
+    else
+        source "$script" > "$tmpfile" 2>&1; local ret=$?
+        if grep -qE "(FAILED|ERROR:)" "$tmpfile"; then
+            cat "$tmpfile"; rm -f "$tmpfile"; return 1
         fi
-    fi
-
-    if [[ "$use_ssh" == "yes" ]]; then
-        echo "git@github.com:${sdk_repo}.git"
-    else
-        # Enforce HTTPS for git operations to prevent MITM attacks
-        local url="https://github.com/${sdk_repo}.git"
-        echo "$url"
+        rm -f "$tmpfile"; return $ret
     fi
 }
 
-# Enforce secure git protocols by blocking insecure ones like git://
-# This is set globally for the current process and child processes.
-_espvm_enforce_secure_git() {
-    # Set per-process git config overrides via a temporary config file to avoid
-    # polluting the user's global ~/.gitconfig.
-    local _espvm_gitconfig
-    _espvm_gitconfig=$(mktemp "${TMPDIR:-/tmp}/espvm-gitconfig.XXXXXX") || {
-        _espvm_red "Error: Failed to create temporary git config file"
-        return 1
-    }
-    git config -f "$_espvm_gitconfig" url."https://".insteadOf "git://" 2>/dev/null
-    git config -f "$_espvm_gitconfig" protocol.file.allow never 2>/dev/null
-    git config -f "$_espvm_gitconfig" protocol.ext.allow never 2>/dev/null
-    export GIT_CONFIG_GLOBAL="$_espvm_gitconfig"
-}
-
-# Get the bare repo directory for an SDK
-_espvm_get_bare_dir() {
-    local sdk="$1"
-    local sdk_name="${_ESPVM_SDKS[$sdk]}"
-    echo "$ESPVM_CONFIG_DIR/${sdk_name}.bare"
-}
-
-# Get the SDK versions directory
-_espvm_get_sdk_dir() {
-    local sdk="$1"
-    local worktree_dir="$(_espvm_get_worktree_dir)"
-    # Remove trailing slash and convert to absolute path
-    worktree_dir="${worktree_dir%/}"
-    if [[ "$worktree_dir" != /* ]]; then
-        worktree_dir="$(cd "$worktree_dir" 2>/dev/null && pwd)" || worktree_dir="$(pwd)/$worktree_dir"
-    fi
-    local sdk_name="${_ESPVM_SDKS[$sdk]}"
-    echo "$worktree_dir/$sdk_name"
-}
-
-# Get the current file path for an SDK
-_espvm_get_current_file() {
-    local sdk="$1"
-    local sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
-    echo "$sdk_dir/.current"
-}
-
-# Validate version string to prevent injection of git options or shell commands
-_espvm_validate_version() {
-    local version="$1"
-    # Reject empty strings
-    if [[ -z "$version" ]]; then
-        _espvm_red "Error: Version cannot be empty"
-        return 1
-    fi
-    # Reject strings starting with - (could be interpreted as git options)
-    if [[ "$version" == -* ]]; then
-        _espvm_red "Error: Version cannot start with '-': $version"
-        return 1
-    fi
-    # Only allow alphanumeric, dots, dashes, underscores, and slashes (for branches like release/v5.0)
-    if [[ ! "$version" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
-        _espvm_red "Error: Version contains invalid characters: $version"
-        _espvm_red "Allowed: letters, numbers, dots, dashes, underscores, slashes"
-        return 1
-    fi
-    return 0
-}
-
-# Normalize version string (add 'v' prefix if missing for tags)
-_espvm_normalize_version() {
-    local version="$1"
-    # Don't add v prefix for branch names (they typically contain / or are like master, main, release/*)
-    if [[ "$version" =~ ^[0-9] ]]; then
-        echo "v$version"
-    else
-        echo "$version"
-    fi
-}
-
-# Encode version for filesystem (replace / with -)
-_espvm_encode_version() {
-    echo "${1//\//-}"
-}
-
-# Decode version from filesystem (replace - with / for known patterns)
-_espvm_decode_version() {
-    local ver="$1"
-    # Only decode release-* pattern back to release/*
-    if [[ "$ver" == release-* ]]; then
-        echo "${ver/release-/release\/}"
-    else
-        echo "$ver"
-    fi
-}
-
-# Verify that a Python script in a git checkout hasn't been tampered with
-_espvm_verify_python_script() {
-    local script_path="$1"
-    local script_dir
-    script_dir=$(cd "$(dirname "$script_path")" && pwd)
-
-    # Verify the script hasn't been modified compared to git
-    local script_name
-    script_name=$(basename "$script_path")
-    if git -C "$script_dir" diff --quiet -- "$script_name" 2>/dev/null && \
-       git -C "$script_dir" diff --quiet HEAD -- "$script_name" 2>/dev/null; then
-        return 0
-    fi
-    return 1
-}
-
-# Run a Python script from a cloned repo with integrity verification
 _espvm_run_python_script() {
-    local script_path="$1"
-    shift
-
-    if [[ ! -f "$script_path" ]]; then
-        _espvm_red "Error: Script not found: $script_path"
-        return 1
-    fi
-
-    # Verify script integrity via git diff
+    local script_path="$1"; shift
+    [[ ! -f "$script_path" ]] && { _espvm_red "Error: Script not found: $script_path"; return 1; }
     if ! _espvm_verify_python_script "$script_path"; then
-        _espvm_yellow "Warning: $script_path has local modifications or is from an unverified commit."
-        _espvm_yellow "Running modified Python scripts may be unsafe."
-        local answer
-        answer="$(_espvm_prompt "Run this script anyway? [y/N]: ")"
-        if [[ ! "$answer" =~ ^[Yy]$ ]]; then
-            return 1
-        fi
+        _espvm_yellow "Warning: $script_path has local modifications."
+        _espvm_confirm "Run this script anyway?" || return 1
     fi
-
-    # Verify script checksum against previously recorded hash
-    local script_name
-    script_name=$(basename "$script_path")
-    if ! _espvm_verify_script_hash "$script_path" "python-${script_name}"; then
-        return 1
-    fi
-
+    local script_name; script_name="$(basename "$script_path")"
+    _espvm_verify_script_hash "$script_path" "python-${script_name}" || return 1
     python3 "$script_path" "$@"
 }
 
-# Initialize the bare repository if it doesn't exist
-_espvm_init_bare() {
-    local sdk="$1"
-    local bare_dir="$(_espvm_get_bare_dir "$sdk")"
-    local repo_url="$(_espvm_get_repo_url "$sdk")"
-    local sdk_name="${_ESPVM_SDKS[$sdk]}"
+# ── Git Operations ──
 
+_espvm_init_bare() {
+    local sdk="$1" bare_dir="$(_espvm_get_bare_dir "$sdk")"
+    local repo_url="$(_espvm_get_repo_url "$sdk")" sdk_name="${_ESPVM_SDKS[$sdk]}"
     if [[ ! -d "$bare_dir" ]]; then
         echo "Initializing $sdk_name repository..."
         mkdir -p "$(dirname "$bare_dir")"
-        # Warn if not using HTTPS or SSH (prevent insecure protocols)
         if [[ "$repo_url" != https://* && "$repo_url" != git@* && "$repo_url" != ssh://* ]]; then
-            _espvm_yellow "Warning: Repository URL does not use HTTPS or SSH: $repo_url"
-            _espvm_yellow "Insecure connections may be vulnerable to man-in-the-middle attacks."
+            _espvm_yellow "Warning: Repository URL doesn't use HTTPS or SSH: $repo_url"
         fi
-        git clone --bare "$repo_url" "$bare_dir"
-        if [[ $? -ne 0 ]]; then
-            _espvm_red "Error: Failed to clone $sdk_name repository"
-            return 1
-        fi
-        # Configure the bare repo for worktrees
+        git clone --bare "$repo_url" "$bare_dir" || { _espvm_red "Error: Failed to clone $sdk_name"; return 1; }
         git -C "$bare_dir" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
-        _espvm_green "Repository initialized successfully"
+        _espvm_green "Repository initialized"
     fi
     return 0
 }
 
-# Ensure bare repo exists, recover if needed for existing worktrees
 _espvm_ensure_bare() {
-    local sdk="$1"
-    local bare_dir="$(_espvm_get_bare_dir "$sdk")"
-
+    local sdk="$1" bare_dir="$(_espvm_get_bare_dir "$sdk")"
     if [[ ! -d "$bare_dir" ]]; then
         _espvm_yellow "Bare repository missing, reinitializing..."
         _espvm_init_bare "$sdk" || return 1
         _espvm_repair_worktrees "$sdk"
     fi
-    return 0
 }
 
-# Repair broken worktree links
 _espvm_repair_worktrees() {
     local sdk="$1"
-    local bare_dir="$(_espvm_get_bare_dir "$sdk")"
-    local sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
-
-    [[ ! -d "$bare_dir" ]] && return 0
-    [[ ! -d "$sdk_dir" ]] && return 0
-
-    # Fix each worktree's .git file to point to current bare repo
+    local bare_dir="$(_espvm_get_bare_dir "$sdk")" sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
+    [[ ! -d "$bare_dir" || ! -d "$sdk_dir" ]] && return 0
     for dir in "$sdk_dir"/*/; do
         [[ ! -d "$dir" ]] && continue
-        local wt_name=$(basename "$dir")
-        local git_file="${dir}.git"
+        local wt_name; wt_name="$(basename "$dir")"
         local wt_git_dir="$bare_dir/worktrees/$wt_name"
-
-        # Create worktrees entry if missing
-        if [[ ! -d "$wt_git_dir" ]]; then
-            mkdir -p "$wt_git_dir"
-            echo "$dir" > "$wt_git_dir/gitdir"
-            # Get current HEAD
-            local head_ref=$(git -C "$dir" rev-parse HEAD 2>/dev/null)
-            [[ -n "$head_ref" ]] && echo "$head_ref" > "$wt_git_dir/HEAD"
-        fi
-
-        # Fix the .git file in worktree to point to bare repo
-        if [[ -f "$git_file" ]]; then
-            echo "gitdir: $wt_git_dir" > "$git_file"
-        fi
+        [[ ! -d "$wt_git_dir" ]] && { mkdir -p "$wt_git_dir"; echo "$dir" > "$wt_git_dir/gitdir"; }
+        local head_ref; head_ref="$(git -C "$dir" rev-parse HEAD 2>/dev/null)"
+        [[ -n "$head_ref" ]] && echo "$head_ref" > "$wt_git_dir/HEAD"
+        [[ -f "$dir.git" ]] && echo "gitdir: $wt_git_dir" > "$dir.git"
     done
-
-    # Run git's repair as well
     git -C "$bare_dir" worktree repair "$sdk_dir" 2>/dev/null
+}
+
+# ── Environment Management ──
+
+_espvm_path_remove() {
+    local remove="$1" new_path="" IFS=':' entry
+    for entry in $PATH; do
+        [[ "$entry" != "$remove" && "$entry" != "$remove"/* ]] && new_path="${new_path:+$new_path:}$entry"
+    done
+    echo "$new_path"
+}
+
+_espvm_clear_sdk_env() {
+    local sdk="$1" active_path="$(_espvm_get_active_path "$sdk")"
+    [[ -n "$active_path" ]] && PATH="$(_espvm_path_remove "$active_path")"
+    if [[ "$sdk" == "idf" ]]; then
+        [[ -n "$IDF_TOOLS_PATH" ]] && PATH="$(_espvm_path_remove "$IDF_TOOLS_PATH")"
+        unset IDF_PATH IDF_PYTHON_ENV_PATH IDF_TOOLS_PATH IDF_COMPONENT_MANAGER_URL
+        unset OPENOCD_SCRIPTS ESP_IDF_VERSION ESP_ROM_ELF_DIR ESP_MATTER_PATH
+    else
+        unset ESP_MATTER_PATH
+    fi
+}
+
+_espvm_check_sdk_deps() {
+    local sdk="$1" requires="${_ESPVM_SDK_REQUIRES[$sdk]}"
+    if [[ -n "$requires" ]] && ! _espvm_is_active "$requires"; then
+        _espvm_red "Error: ${_ESPVM_SDKS[$sdk]} requires ${_ESPVM_SDKS[$requires]} to be active"
+        echo "Run 'espvm use <version>' first" >&2; return 1
+    fi
     return 0
 }
 
-# Check if tools are installed for a version (ESP-IDF specific)
+# ── Install ──
+
 _espvm_check_tools() {
-    local version_dir="$1"
-    if [[ ! -f "$version_dir/tools/idf_tools.py" ]]; then
-        return 1
-    fi
-    IDF_PATH="$version_dir" python3 "$version_dir/tools/idf_tools.py" check >/dev/null 2>&1
-    return $?
+    [[ ! -f "$1/tools/idf_tools.py" ]] && return 1
+    IDF_PATH="$1" python3 "$1/tools/idf_tools.py" check >/dev/null 2>&1
 }
 
-# Run install.sh if needed (force=1 to skip check)
-_espvm_maybe_install() {
-    local version_dir="$1"
-    local version="$2"
-    local sdk="$3"
-    local force="${4:-0}"
-
-    # Check if install.sh exists
-    if [[ ! -f "$version_dir/install.sh" ]]; then
-        _espvm_yellow "No install.sh found, skipping tools installation"
-        return 0
+_espvm_run_install() {
+    local version_dir="$1" sdk="$2"
+    if ! _espvm_verify_install_integrity "$version_dir"; then
+        _espvm_yellow "Warning: install.sh has local modifications."
+        _espvm_confirm "Run install.sh anyway?" || return 1
     fi
-
-    # For ESP-IDF, check if tools are already installed (unless force)
-    if [[ "$sdk" == "idf" && "$force" -ne 1 ]]; then
-        if _espvm_check_tools "$version_dir"; then
-            _espvm_green "Tools already installed for $version"
-            return 0
-        fi
-    fi
-
-    echo -n "Installing tools for $version... "
-    local install_args="$(_espvm_get_install_args "$sdk")"
-    if _espvm_run_install "$version_dir" "$sdk" "${install_args:-}"; then
-        _espvm_green "done"
-        return 0
+    _espvm_verify_script_hash "$version_dir/install.sh" "install.sh" || return 1
+    local install_args="${_ESPVM_SDK_INSTALL_ARGS[$sdk]}"
+    if [[ -n "$install_args" ]]; then
+        (cd "$version_dir" && _espvm_run_quiet ./install.sh "$install_args")
     else
-        _espvm_red "failed"
-        return 1
+        (cd "$version_dir" && _espvm_run_quiet ./install.sh)
     fi
 }
 
-# Install a specific version
-_espvm_install() {
-    local sdk="$1"
-    local version="$2"
-    shift 2
+_espvm_maybe_install() {
+    local version_dir="$1" version="$2" sdk="$3" force="${4:-0}"
+    [[ ! -f "$version_dir/install.sh" ]] && { _espvm_yellow "No install.sh found, skipping tools installation"; return 0; }
+    if [[ "$sdk" == "idf" && "$force" -ne 1 ]] && _espvm_check_tools "$version_dir"; then
+        _espvm_green "Tools already installed for $version"; return 0
+    fi
+    echo -n "Installing tools for $version... "
+    if _espvm_run_install "$version_dir" "$sdk"; then
+        _espvm_green "done"; return 0
+    else
+        _espvm_red "failed"; return 1
+    fi
+}
 
-    # Parse additional flags
+_espvm_install() {
+    local sdk="$1" version="$2"; shift 2
     _ESPVM_WORKTREE_FLAG=""
     local force=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --path=*)
-                _ESPVM_WORKTREE_FLAG="${1#*=}"
-                _ESPVM_WORKTREE_FLAG="${_ESPVM_WORKTREE_FLAG/#\~/$HOME}"
-                shift
-                ;;
-            --path)
-                _ESPVM_WORKTREE_FLAG="$2"
-                _ESPVM_WORKTREE_FLAG="${_ESPVM_WORKTREE_FLAG/#\~/$HOME}"
-                shift 2
-                ;;
-            --force|-f)
-                force=1
-                shift
-                ;;
-            --verbose|-v)
-                _ESPVM_VERBOSE=1
-                shift
-                ;;
-            *)
-                _espvm_red "Unknown option: $1"
-                return 1
-                ;;
+            --path=*) _ESPVM_WORKTREE_FLAG="${1#*=}"; _ESPVM_WORKTREE_FLAG="${_ESPVM_WORKTREE_FLAG/#\~/$HOME}"; shift ;;
+            --path)   _ESPVM_WORKTREE_FLAG="$2"; _ESPVM_WORKTREE_FLAG="${_ESPVM_WORKTREE_FLAG/#\~/$HOME}"; shift 2 ;;
+            --force|-f) force=1; shift ;;
+            --verbose|-v) _ESPVM_VERBOSE=1; shift ;;
+            *) _espvm_red "Unknown option: $1"; return 1 ;;
         esac
     done
 
-    if [[ -z "$version" ]]; then
-        _espvm_red "Usage: espvm $sdk install <version> [--path=<dir>] [--force]"
-        return 1
-    fi
-
+    [[ -z "$version" ]] && { _espvm_red "Usage: espvm $sdk install <version> [--path=<dir>] [--force]"; return 1; }
     _espvm_check_prereqs || return 1
 
     local sdk_name="${_ESPVM_SDKS[$sdk]}"
     _espvm_validate_version "$version" || return 1
-    version=$(_espvm_normalize_version "$version")
-    local encoded_version=$(_espvm_encode_version "$version")
+    version="$(_espvm_normalize_version "$version")"
+    local encoded_version="$(_espvm_encode_version "$version")"
     local sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
     local version_dir="$sdk_dir/$encoded_version"
 
@@ -857,70 +460,43 @@ _espvm_install() {
         if [[ $force -eq 1 ]]; then
             _espvm_yellow "Reinstalling tools for $sdk_name $version..."
             _espvm_maybe_install "$version_dir" "$version" "$sdk" 1 || return 1
-            _espvm_green "Tools reinstalled successfully"
-            return 0
+            _espvm_green "Tools reinstalled"; _ESPVM_WORKTREE_FLAG=""; return 0
         fi
         _espvm_yellow "$sdk_name $version is already installed at $version_dir"
-        echo "Use --force to reinstall tools"
-        return 0
+        echo "Use --force to reinstall tools"; _ESPVM_WORKTREE_FLAG=""; return 0
     fi
 
     echo "Installing $sdk_name $version..."
-
-    # Different installation approach for IDF vs Matter
     if [[ "$sdk" == "matter" ]]; then
         _espvm_install_matter "$version" "$version_dir" || return 1
     else
         _espvm_install_idf "$version" "$version_dir" || return 1
     fi
-
-    # Install tools if needed
     _espvm_maybe_install "$version_dir" "$version" "$sdk" || return 1
-
     _espvm_green "$sdk_name $version installed successfully"
     echo "Run 'espvm $sdk use $version' to activate it"
-
-    # Clear the flag
     _ESPVM_WORKTREE_FLAG=""
     return 0
 }
 
-# Install ESP-IDF using worktree (efficient disk usage)
 _espvm_install_idf() {
-    local version="$1"
-    local version_dir="$2"
-    local bare_dir="$(_espvm_get_bare_dir "idf")"
-    local sdk_dir="$(dirname "$version_dir")"
-
-    # Initialize bare repo if needed
+    local version="$1" version_dir="$2"
+    local bare_dir="$(_espvm_get_bare_dir "idf")" sdk_dir="$(dirname "$version_dir")"
     _espvm_init_bare "idf" || return 1
 
-    # Fetch the specific tag/branch (use -- to prevent version from being interpreted as a flag)
     echo "Fetching $version..."
     if ! git -C "$bare_dir" fetch origin -- tag "$version" --no-tags 2>/dev/null; then
         echo "Not a tag, trying as branch..."
-        git -C "$bare_dir" fetch origin -- "$version"
-        if [[ $? -ne 0 ]]; then
-            _espvm_red "Error: Failed to fetch $version (does this version exist?)"
-            return 1
-        fi
+        git -C "$bare_dir" fetch origin -- "$version" || { _espvm_red "Error: Failed to fetch $version"; return 1; }
     fi
 
-    # Verify tag signature if possible
     if git -C "$bare_dir" tag -v "$version" &>/dev/null; then
         _espvm_green "Tag signature verified for $version"
     else
         _espvm_yellow "Warning: Tag $version is not signed or signature could not be verified"
-        _espvm_yellow "This could indicate a supply-chain attack or an unsigned release."
-        local answer
-        answer="$(_espvm_prompt "Continue with unsigned tag? [y/N]: ")"
-        if [[ ! "$answer" =~ ^[Yy]$ ]]; then
-            _espvm_red "Aborting installation of unsigned tag $version"
-            return 1
-        fi
+        _espvm_confirm "Continue with unsigned tag?" || { _espvm_red "Aborting"; return 1; }
     fi
 
-    # Create worktree
     echo "Creating worktree for $version..."
     mkdir -p "$sdk_dir"
     git -C "$bare_dir" worktree prune 2>/dev/null
@@ -928,217 +504,55 @@ _espvm_install_idf() {
         _espvm_yellow "Cleaning up stale worktree reference..."
         git -C "$bare_dir" worktree remove "$version_dir" --force 2>/dev/null
         git -C "$bare_dir" worktree prune 2>/dev/null
-        git -C "$bare_dir" worktree add -- "$version_dir" "$version"
-        if [[ $? -ne 0 ]]; then
-            _espvm_red "Error: Failed to create worktree"
-            return 1
-        fi
+        git -C "$bare_dir" worktree add -- "$version_dir" "$version" || { _espvm_red "Error: Failed to create worktree"; return 1; }
     fi
 
-    # Initialize submodules
     echo "Initializing submodules..."
-    git -C "$version_dir" submodule update --init --recursive --jobs 8 --depth 1
-    if [[ $? -ne 0 ]]; then
-        _espvm_red "Error: Failed to initialize submodules"
-        return 1
-    fi
-
-    return 0
+    git -C "$version_dir" submodule update --init --recursive --jobs 8 --depth 1 || \
+        { _espvm_red "Error: Failed to initialize submodules"; return 1; }
 }
 
-# Install ESP-Matter using clone (worktree doesn't work well with its submodules)
 _espvm_install_matter() {
-    local version="$1"
-    local version_dir="$2"
-    local sdk_dir="$(dirname "$version_dir")"
-    local repo_url="$(_espvm_get_repo_url "matter")"
-
-    # ESP-Matter requires ESP-IDF to be active
+    local version="$1" version_dir="$2"
+    local sdk_dir="$(dirname "$version_dir")" repo_url="$(_espvm_get_repo_url "matter")"
     _espvm_check_sdk_deps "matter" || return 1
-
     mkdir -p "$sdk_dir"
 
-    # Verify the repo URL uses a secure protocol
     if [[ "$repo_url" != https://* && "$repo_url" != git@* && "$repo_url" != ssh://* ]]; then
-        _espvm_yellow "Warning: Repository URL does not use HTTPS or SSH: $repo_url"
-        _espvm_yellow "Insecure connections may be vulnerable to man-in-the-middle attacks."
+        _espvm_yellow "Warning: Repository URL doesn't use HTTPS or SSH: $repo_url"
     fi
 
-    # Clone with specific branch/tag (use -- to separate options from refs)
     echo "Cloning $version..."
-    if ! git clone --depth 1 --branch "$version" -- "$repo_url" "$version_dir" 2>/dev/null; then
-        _espvm_red "Error: Failed to clone $version (does this version exist?)"
-        return 1
-    fi
+    git clone --depth 1 --branch "$version" -- "$repo_url" "$version_dir" 2>/dev/null || \
+        { _espvm_red "Error: Failed to clone $version"; return 1; }
 
-    # Initialize submodules (shallow)
     echo "Initializing submodules..."
-    git -C "$version_dir" submodule update --init --depth 1
-    if [[ $? -ne 0 ]]; then
-        _espvm_red "Error: Failed to initialize submodules"
-        _espvm_safe_rm_rf "$version_dir"
-        return 1
-    fi
+    git -C "$version_dir" submodule update --init --depth 1 || {
+        _espvm_red "Error: Failed to initialize submodules"; _espvm_safe_rm_rf "$version_dir"; return 1
+    }
 
-    # Use checkout_submodules.py for connectedhomeip (platform-specific)
     local chip_dir="$version_dir/connectedhomeip/connectedhomeip"
     if [[ -f "$chip_dir/scripts/checkout_submodules.py" ]]; then
         echo "Checking out CHIP submodules for esp32 linux..."
-        if ! (cd "$chip_dir" && _espvm_run_python_script "$chip_dir/scripts/checkout_submodules.py" --platform esp32 linux --shallow); then
-            _espvm_red "Error: Failed to checkout CHIP submodules"
-            _espvm_safe_rm_rf "$version_dir"
-            return 1
-        fi
-    fi
-
-    return 0
-}
-
-# Clear SDK environment variables and PATH entries
-# Uses exact matching (anchored) to avoid accidentally removing paths
-# that merely contain the SDK path as a substring.
-_espvm_path_remove() {
-    # Remove exact path entries from PATH, not substring matches
-    local remove="$1"
-    local new_path=""
-    local IFS=':'
-    local entry
-    for entry in $PATH; do
-        if [[ "$entry" != "$remove" ]]; then
-            new_path="${new_path:+$new_path:}$entry"
-        fi
-    done
-    echo "$new_path"
-}
-
-_espvm_clear_sdk_env() {
-    local sdk="$1"
-    local active_path="$(_espvm_get_active_path "$sdk")"
-    if [[ -n "$active_path" ]]; then
-        PATH=$(_espvm_path_remove "$active_path")
-        # Also remove any subdirectories of the active path
-        local IFS=':'
-        local new_path=""
-        local entry
-        for entry in $PATH; do
-            if [[ "$entry" != "$active_path"/* ]]; then
-                new_path="${new_path:+$new_path:}$entry"
-            fi
-        done
-        PATH="$new_path"
-    fi
-
-    if [[ "$sdk" == "idf" ]]; then
-        if [[ -n "$IDF_TOOLS_PATH" ]]; then
-            PATH=$(_espvm_path_remove "$IDF_TOOLS_PATH")
-            local IFS=':'
-            local new_path=""
-            local entry
-            for entry in $PATH; do
-                if [[ "$entry" != "$IDF_TOOLS_PATH"/* ]]; then
-                    new_path="${new_path:+$new_path:}$entry"
-                fi
-            done
-            PATH="$new_path"
-        fi
-        unset IDF_PATH IDF_PYTHON_ENV_PATH IDF_TOOLS_PATH IDF_COMPONENT_MANAGER_URL
-        unset OPENOCD_SCRIPTS ESP_IDF_VERSION ESP_ROM_ELF_DIR
-        unset ESP_MATTER_PATH  # Matter depends on IDF
-    else
-        unset ESP_MATTER_PATH
+        (cd "$chip_dir" && _espvm_run_python_script "$chip_dir/scripts/checkout_submodules.py" --platform esp32 linux --shallow) || {
+            _espvm_red "Error: Failed to checkout CHIP submodules"; _espvm_safe_rm_rf "$version_dir"; return 1
+        }
     fi
 }
 
-# Run install.sh to fix activation issues
-_espvm_run_install_fix() {
-    local sdk="$1"
-    local version_dir="$2"
-    local install_args="$(_espvm_get_install_args "$sdk")"
-    _espvm_run_install "$version_dir" "$sdk" "${install_args:-}"
-}
+# ── Use / Activate ──
 
-# Verify install.sh integrity by checking git status of the checkout
-_espvm_verify_install_integrity() {
-    local version_dir="$1"
-
-    # Verify that install.sh hasn't been modified compared to git
-    if git -C "$version_dir" diff --quiet -- install.sh 2>/dev/null && \
-       git -C "$version_dir" diff --quiet HEAD -- install.sh 2>/dev/null; then
-        return 0
-    fi
-    return 1
-}
-
-# Run install.sh with safety verification
-_espvm_run_install() {
-    local version_dir="$1"
-    local sdk="$2"
-    shift 2
-
-    # Verify install.sh integrity before running
-    if ! _espvm_verify_install_integrity "$version_dir"; then
-        _espvm_yellow "Warning: install.sh has local modifications or is from an unverified commit."
-        _espvm_yellow "Running modified install scripts may be unsafe."
-        local answer
-        answer="$(_espvm_prompt "Run install.sh anyway? [y/N]: ")"
-        if [[ ! "$answer" =~ ^[Yy]$ ]]; then
-            return 1
-        fi
-    fi
-
-    # Verify install.sh checksum matches previously recorded hash
-    if ! _espvm_verify_script_hash "$version_dir/install.sh" "install.sh"; then
-        return 1
-    fi
-
-    (cd "$version_dir" && _espvm_run_quiet ./install.sh "$@")
-}
-
-# Verify that SDK activation succeeded
-_espvm_verify_activation() {
-    local sdk="$1"
-    local version_dir="$2"
-    local active_path="$(_espvm_get_active_path "$sdk")"
-
-    if [[ "$active_path" != "$version_dir" ]]; then
-        return 1
-    fi
-
-    if [[ "$sdk" == "idf" ]] && ! command -v idf.py &>/dev/null; then
-        return 1
-    fi
-
-    return 0
-}
-
-# Switch to a specific version
 _espvm_use() {
-    local sdk="$1"
-    local version="$2"
-    shift 2 2>/dev/null || true
-
-    # Parse flags
+    local sdk="$1" version="$2"; shift 2 2>/dev/null || true
     while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --verbose|-v)
-                _ESPVM_VERBOSE=1
-                shift
-                ;;
-            *)
-                shift
-                ;;
-        esac
+        case "$1" in --verbose|-v) _ESPVM_VERBOSE=1; shift ;; *) shift ;; esac
     done
 
-    if [[ -z "$version" ]]; then
-        _espvm_red "Usage: espvm $sdk use <version> [-v]"
-        return 1
-    fi
-
+    [[ -z "$version" ]] && { _espvm_red "Usage: espvm $sdk use <version> [-v]"; return 1; }
     local sdk_name="${_ESPVM_SDKS[$sdk]}"
     _espvm_validate_version "$version" || return 1
-    version=$(_espvm_normalize_version "$version")
-    local encoded_version=$(_espvm_encode_version "$version")
+    version="$(_espvm_normalize_version "$version")"
+    local encoded_version="$(_espvm_encode_version "$version")"
     local sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
     local version_dir="$sdk_dir/$encoded_version"
     local current_file="$(_espvm_get_current_file "$sdk")"
@@ -1146,350 +560,197 @@ _espvm_use() {
     local just_installed=0
     if [[ ! -d "$version_dir" ]]; then
         _espvm_yellow "$sdk_name $version is not installed"
-        answer="$(_espvm_prompt "Install it now? [y/N]: ")"
-        if [[ "$answer" =~ ^[Yy]$ ]]; then
-            _espvm_install "$sdk" "$version" || return 1
-            just_installed=1
-        else
-            return 1
-        fi
+        _espvm_confirm "Install it now?" || return 1
+        _espvm_install "$sdk" "$version" || return 1
+        just_installed=1
     fi
 
-    # Check SDK dependencies
     _espvm_check_sdk_deps "$sdk" || return 1
+    [[ ! -f "$version_dir/export.sh" ]] && { _espvm_red "Error: export.sh not found in $version_dir"; return 1; }
 
-    if [[ ! -f "$version_dir/export.sh" ]]; then
-        _espvm_red "Error: export.sh not found in $version_dir"
-        return 1
-    fi
-
-    # Repair worktree links if bare repo exists
     local bare_dir="$(_espvm_get_bare_dir "$sdk")"
-    if [[ -d "$bare_dir" ]]; then
-        git -C "$bare_dir" worktree repair "$version_dir" 2>/dev/null
-    fi
+    [[ -d "$bare_dir" ]] && git -C "$bare_dir" worktree repair "$version_dir" 2>/dev/null
 
-    # Clear previous environment to avoid conflicts
     _espvm_clear_sdk_env "$sdk"
-
-    # Activate the version
     echo -n "Activating $sdk_name $version... "
+
     if ! _espvm_source_quiet "$version_dir/export.sh" "$sdk"; then
         _espvm_red "failed"
-        if [[ $just_installed -eq 1 ]]; then
-            return 1
-        fi
-        answer="$(_espvm_prompt "Run install.sh to fix? [y/N]: ")"
-        if [[ "$answer" =~ ^[Yy]$ ]]; then
-            _espvm_run_install_fix "$sdk" "$version_dir" || return 1
-            echo -n "Retrying activation... "
-            if _espvm_source_quiet "$version_dir/export.sh" "$sdk"; then
-                _espvm_green "done"
-            else
-                _espvm_red "failed"
-                return 1
-            fi
-        else
-            return 1
-        fi
-    else
-        # Verify activation
-        if ! _espvm_verify_activation "$sdk" "$version_dir"; then
-            _espvm_red "failed"
-            if [[ $just_installed -eq 1 ]]; then
-                return 1
-            fi
-            answer="$(_espvm_prompt "Run install.sh to fix? [y/N]: ")"
-            if [[ "$answer" =~ ^[Yy]$ ]]; then
-                _espvm_run_install_fix "$sdk" "$version_dir" || return 1
-                echo -n "Retrying activation... "
-                _espvm_source_quiet "$version_dir/export.sh" "$sdk"
-                _espvm_green "done"
-            else
-                return 1
-            fi
-        else
+        [[ $just_installed -eq 1 ]] && return 1
+        _espvm_confirm "Run install.sh to fix?" || return 1
+        _espvm_run_install "$version_dir" "$sdk" || return 1
+        echo -n "Retrying activation... "
+        if _espvm_source_quiet "$version_dir/export.sh" "$sdk"; then
             _espvm_green "done"
+        else
+            _espvm_red "failed"; return 1
         fi
+    elif ! _espvm_verify_activation "$sdk" "$version_dir"; then
+        _espvm_red "failed"
+        [[ $just_installed -eq 1 ]] && return 1
+        _espvm_confirm "Run install.sh to fix?" || return 1
+        _espvm_run_install "$version_dir" "$sdk" || return 1
+        echo -n "Retrying activation... "
+        _espvm_source_quiet "$version_dir/export.sh" "$sdk"
+        _espvm_green "done"
+    else
+        _espvm_green "done"
     fi
 
-    # Save current version (encoded for consistency)
     mkdir -p "$(dirname "$current_file")"
     echo "$encoded_version" > "$current_file"
-
     _espvm_green "Now using $sdk_name $version"
+}
+
+_espvm_verify_activation() {
+    local sdk="$1" version_dir="$2" active_path="$(_espvm_get_active_path "$sdk")"
+    [[ "$active_path" == "$version_dir" ]] || return 1
+    [[ "$sdk" == "idf" ]] && ! command -v idf.py &>/dev/null && return 1
     return 0
 }
 
-# List installed versions
-_espvm_list() {
-    local sdk="$1"
-    local sdk_name="${_ESPVM_SDKS[$sdk]}"
-    local sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
+# ── Remove ──
 
-    if [[ ! -d "$sdk_dir" ]]; then
-        echo "No $sdk_name versions installed"
-        return 0
-    fi
-
-    echo "Installed $sdk_name versions:"
-    local found=0
-    for dir in "$sdk_dir"/*/; do
-        if [[ -d "$dir" ]]; then
-            local encoded_ver=$(basename "$dir")
-            # Skip hidden directories
-            [[ "$encoded_ver" == .* ]] && continue
-            local ver=$(_espvm_decode_version "$encoded_ver")
-            local ver_dir="${dir%/}"
-            found=1
-            # Check if actually active
-            local active_path="$(_espvm_get_active_path "$sdk")"
-            if [[ "$active_path" == "$ver_dir" ]]; then
-                _espvm_green "* $ver (active)"
-            else
-                echo "  $ver"
-            fi
-        fi
-    done
-
-    if [[ $found -eq 0 ]]; then
-        echo "  (none)"
-    fi
-    return 0
-}
-
-# List available remote versions
-_espvm_list_remote() {
-    local sdk="$1"
-    local sdk_name="${_ESPVM_SDKS[$sdk]}"
-    local repo_url="$(_espvm_get_repo_url "$sdk")"
-
-    # Warn if not using a secure protocol
-    if [[ "$repo_url" != https://* && "$repo_url" != git@* && "$repo_url" != ssh://* ]]; then
-        _espvm_yellow "Warning: Using insecure protocol for git operations: $repo_url"
-    fi
-
-    echo "Fetching available $sdk_name versions..."
-    echo ""
-
-    # Get tags (releases)
-    _espvm_blue "Tags (releases):"
-    local tags=$(git ls-remote --tags "$repo_url" 2>/dev/null | \
-        sed 's/.*refs\/tags\///' | \
-        grep -v '\^{}' | \
-        grep '^v[0-9]' | \
-        sort -V -r | \
-        head -20)
-
-    if [[ -n "$tags" ]]; then
-        echo "$tags" | sed 's/^/  /'
-    else
-        echo "  (none found)"
-    fi
-
-    echo ""
-
-    # Get branches
-    _espvm_blue "Branches:"
-    local branches=$(git ls-remote --heads "$repo_url" 2>/dev/null | \
-        sed 's/.*refs\/heads\///' | \
-        head -20)
-
-    if [[ -n "$branches" ]]; then
-        echo "$branches" | sed 's/^/  /'
-    else
-        echo "  (none found)"
-    fi
-
-    echo ""
-    echo "Use 'espvm $sdk install <version>' to install a specific version"
-    return 0
-}
-
-# Remove an installed version
 _espvm_remove() {
-    local sdk="$1"
-    local version="$2"
-
-    if [[ -z "$version" ]]; then
-        _espvm_red "Usage: espvm $sdk remove <version>"
-        return 1
-    fi
-
+    local sdk="$1" version="$2"
+    [[ -z "$version" ]] && { _espvm_red "Usage: espvm $sdk remove <version>"; return 1; }
     local sdk_name="${_ESPVM_SDKS[$sdk]}"
     _espvm_validate_version "$version" || return 1
-    version=$(_espvm_normalize_version "$version")
-    local encoded_version=$(_espvm_encode_version "$version")
-    local sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
-    local version_dir="$sdk_dir/$encoded_version"
+    version="$(_espvm_normalize_version "$version")"
+    local encoded_version="$(_espvm_encode_version "$version")"
+    local version_dir="$(_espvm_get_sdk_dir "$sdk")/$encoded_version"
     local current_file="$(_espvm_get_current_file "$sdk")"
 
-    if [[ ! -d "$version_dir" ]]; then
-        _espvm_red "Error: $sdk_name $version is not installed"
-        return 1
-    fi
-
-    # Check if it's the current version
+    [[ ! -d "$version_dir" ]] && { _espvm_red "Error: $sdk_name $version is not installed"; return 1; }
     local current=""
-    if [[ -f "$current_file" ]]; then
-        current=$(cat "$current_file")
-    fi
-
-    if [[ "$encoded_version" == "$current" ]]; then
-        _espvm_yellow "Warning: $version is currently active"
-    fi
+    [[ -f "$current_file" ]] && current="$(cat "$current_file")"
+    [[ "$encoded_version" == "$current" ]] && _espvm_yellow "Warning: $version is currently active"
 
     echo "Removing $sdk_name $version..."
-
     if _espvm_uses_worktree "$sdk"; then
         local bare_dir="$(_espvm_get_bare_dir "$sdk")"
         _espvm_ensure_bare "$sdk"
-        git -C "$bare_dir" worktree remove "$version_dir" --force 2>/dev/null
-        if [[ $? -ne 0 ]]; then
-            _espvm_safe_rm_rf "$version_dir"
-        fi
+        git -C "$bare_dir" worktree remove "$version_dir" --force 2>/dev/null || _espvm_safe_rm_rf "$version_dir"
         git -C "$bare_dir" worktree prune 2>/dev/null
     else
         _espvm_safe_rm_rf "$version_dir"
     fi
-
-    # Clear current if removed
-    if [[ "$encoded_version" == "$current" ]]; then
-        rm -f "$current_file"
-    fi
-
-    _espvm_green "$sdk_name $version removed successfully"
-    return 0
+    [[ "$encoded_version" == "$current" ]] && rm -f "$current_file"
+    _espvm_green "$sdk_name $version removed"
 }
 
-# Update an installed version
+# ── Update ──
+
 _espvm_update() {
-    local sdk="$1"
-    local version="$2"
-
-    if [[ -z "$version" ]]; then
-        _espvm_red "Usage: espvm $sdk update <version>"
-        return 1
-    fi
-
+    local sdk="$1" version="$2"
+    [[ -z "$version" ]] && { _espvm_red "Usage: espvm $sdk update <version>"; return 1; }
     local sdk_name="${_ESPVM_SDKS[$sdk]}"
     _espvm_validate_version "$version" || return 1
-    version=$(_espvm_normalize_version "$version")
-    local encoded_version=$(_espvm_encode_version "$version")
-    local sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
-    local version_dir="$sdk_dir/$encoded_version"
+    version="$(_espvm_normalize_version "$version")"
+    local encoded_version="$(_espvm_encode_version "$version")"
+    local version_dir="$(_espvm_get_sdk_dir "$sdk")/$encoded_version"
 
-    if [[ ! -d "$version_dir" ]]; then
-        _espvm_red "Error: $sdk_name $version is not installed"
-        return 1
-    fi
-
+    [[ ! -d "$version_dir" ]] && { _espvm_red "Error: $sdk_name $version is not installed"; return 1; }
     echo "Updating $sdk_name $version..."
 
     if _espvm_uses_worktree "$sdk"; then
         local bare_dir="$(_espvm_get_bare_dir "$sdk")"
         _espvm_ensure_bare "$sdk" || return 1
-
         git -C "$bare_dir" fetch origin -- tag "$version" --force 2>/dev/null || \
-            git -C "$bare_dir" fetch origin -- "$version" --force
-        if [[ $? -ne 0 ]]; then
-            _espvm_red "Error: Failed to fetch updates"
-            return 1
-        fi
-
+            git -C "$bare_dir" fetch origin -- "$version" --force || \
+            { _espvm_red "Error: Failed to fetch updates"; return 1; }
         git -C "$version_dir" checkout -- "$version"
         git -C "$version_dir" reset --hard "$version"
-
         echo "Updating submodules..."
-        git -C "$version_dir" submodule update --init --recursive
-        if [[ $? -ne 0 ]]; then
-            _espvm_red "Error: Failed to update submodules"
-            return 1
-        fi
+        git -C "$version_dir" submodule update --init --recursive || \
+            { _espvm_red "Error: Failed to update submodules"; return 1; }
     else
         git -C "$version_dir" fetch --depth 1 origin -- tag "$version" --force 2>/dev/null || \
-            git -C "$version_dir" fetch --depth 1 origin -- "$version" --force
-        if [[ $? -ne 0 ]]; then
-            _espvm_red "Error: Failed to fetch updates"
-            return 1
-        fi
-
+            git -C "$version_dir" fetch --depth 1 origin -- "$version" --force || \
+            { _espvm_red "Error: Failed to fetch updates"; return 1; }
         git -C "$version_dir" checkout -- "$version"
         git -C "$version_dir" reset --hard "$version"
-
         echo "Updating submodules..."
-        git -C "$version_dir" submodule update --init --depth 1
-        if [[ $? -ne 0 ]]; then
-            _espvm_red "Error: Failed to update submodules"
-            return 1
-        fi
-
-        # Re-run checkout_submodules.py for connectedhomeip (esp-matter specific)
+        git -C "$version_dir" submodule update --init --depth 1 || \
+            { _espvm_red "Error: Failed to update submodules"; return 1; }
         local chip_dir="$version_dir/connectedhomeip/connectedhomeip"
         if [[ -f "$chip_dir/scripts/checkout_submodules.py" ]]; then
             echo "Updating CHIP submodules..."
-            if ! (cd "$chip_dir" && _espvm_run_python_script "$chip_dir/scripts/checkout_submodules.py" --platform esp32 linux --shallow); then
-                _espvm_red "Error: Failed to update CHIP submodules"
-                return 1
-            fi
+            (cd "$chip_dir" && _espvm_run_python_script "$chip_dir/scripts/checkout_submodules.py" --platform esp32 linux --shallow) || \
+                { _espvm_red "Error: Failed to update CHIP submodules"; return 1; }
         fi
     fi
 
-    # Check and install tools if needed
     _espvm_maybe_install "$version_dir" "$version" "$sdk" || return 1
-
-    _espvm_green "$sdk_name $version updated successfully"
-    return 0
+    _espvm_green "$sdk_name $version updated"
 }
 
-# Show current version
-_espvm_current() {
-    local sdk="$1"
-    local sdk_name="${_ESPVM_SDKS[$sdk]}"
-    local current_file="$(_espvm_get_current_file "$sdk")"
+# ── List ──
 
-    if [[ -f "$current_file" ]]; then
-        local encoded_current=$(cat "$current_file")
-        local current=$(_espvm_decode_version "$encoded_current")
-        echo "Current $sdk_name version: $current"
-        local env_var="$(_espvm_get_env_var "$sdk")"
+_espvm_list() {
+    local sdk="$1" sdk_name="${_ESPVM_SDKS[$sdk]}" sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
+    [[ ! -d "$sdk_dir" ]] && { echo "No $sdk_name versions installed"; return 0; }
+    echo "Installed $sdk_name versions:"
+    local found=0
+    for dir in "$sdk_dir"/*/; do
+        [[ ! -d "$dir" ]] && continue
+        local encoded_ver; encoded_ver="$(basename "$dir")"
+        [[ "$encoded_ver" == .* ]] && continue
+        local ver="$(_espvm_decode_version "$encoded_ver")"
         local active_path="$(_espvm_get_active_path "$sdk")"
-        if [[ -n "$active_path" ]]; then
-            echo "$env_var: $active_path"
+        if [[ "$active_path" == "${dir%/}" ]]; then
+            _espvm_green "* $ver (active)"
+        else
+            echo "  $ver"
         fi
+        found=1
+    done
+    [[ $found -eq 0 ]] && echo "  (none)"
+}
+
+_espvm_list_remote() {
+    local sdk="$1" sdk_name="${_ESPVM_SDKS[$sdk]}" repo_url="$(_espvm_get_repo_url "$sdk")"
+    [[ "$repo_url" != https://* && "$repo_url" != git@* && "$repo_url" != ssh://* ]] && \
+        _espvm_yellow "Warning: Using insecure protocol: $repo_url"
+    echo "Fetching available $sdk_name versions..."
+    echo ""
+    _espvm_blue "Tags (releases):"
+    local tags; tags="$(git ls-remote --tags "$repo_url" 2>/dev/null | sed 's/.*refs\/tags\///' | grep -v '\^{}' | grep '^v[0-9]' | sort -V -r | head -20)"
+    [[ -n "$tags" ]] && echo "$tags" | sed 's/^/  /' || echo "  (none found)"
+    echo ""
+    _espvm_blue "Branches:"
+    local branches; branches="$(git ls-remote --heads "$repo_url" 2>/dev/null | sed 's/.*refs\/heads\///' | head -20)"
+    [[ -n "$branches" ]] && echo "$branches" | sed 's/^/  /' || echo "  (none found)"
+    echo ""
+    echo "Use 'espvm $sdk install <version>' to install a specific version"
+}
+
+_espvm_current() {
+    local sdk="$1" sdk_name="${_ESPVM_SDKS[$sdk]}" current_file="$(_espvm_get_current_file "$sdk")"
+    if [[ -f "$current_file" ]]; then
+        local current="$(_espvm_decode_version "$(cat "$current_file")")"
+        echo "Current $sdk_name version: $current"
+        local active_path="$(_espvm_get_active_path "$sdk")"
+        [[ -n "$active_path" ]] && echo "${_ESPVM_SDK_ENV_VAR[$sdk]}: $active_path"
     else
         echo "No $sdk_name version currently active"
         echo "Run 'espvm $sdk use <version>' to activate a version"
     fi
-    return 0
 }
 
-# Show status of all SDKs
 _espvm_status() {
     echo "ESP-IDF:"
-    if [[ -n "$IDF_PATH" ]]; then
-        _espvm_green "  $(basename "$IDF_PATH") (active)"
-    else
-        echo "  (not active)"
-    fi
-
+    [[ -n "$IDF_PATH" ]] && _espvm_green "  $(basename "$IDF_PATH") (active)" || echo "  (not active)"
     echo "ESP-Matter:"
-    if [[ -n "$ESP_MATTER_PATH" ]]; then
-        _espvm_green "  $(basename "$ESP_MATTER_PATH") (active)"
-    else
-        echo "  (not active)"
-    fi
+    [[ -n "$ESP_MATTER_PATH" ]] && _espvm_green "  $(basename "$ESP_MATTER_PATH") (active)" || echo "  (not active)"
 }
 
-# Show/set configuration
+# ── Config ──
+
 espvm_config() {
-    local action="$1"
-    local key="$2"
-    local value="$3"
-
+    local action="$1" key="$2" value="$3"
     _espvm_load_config
-
-    if [[ -z "$action" ]] || [[ "$action" == "show" ]]; then
+    if [[ -z "$action" || "$action" == "show" ]]; then
         echo "espvm configuration:"
         echo ""
         echo "Config file: $ESPVM_CONFIG_FILE"
@@ -1501,80 +762,48 @@ espvm_config() {
         echo "Bare repositories:"
         for sdk in "${!_ESPVM_SDKS[@]}"; do
             local bare_dir="$(_espvm_get_bare_dir "$sdk")"
-            if [[ -d "$bare_dir" ]]; then
-                echo "  ${_ESPVM_SDKS[$sdk]}: $bare_dir"
-            fi
+            [[ -d "$bare_dir" ]] && echo "  ${_ESPVM_SDKS[$sdk]}: $bare_dir"
         done
         return 0
     fi
-
     if [[ "$action" == "set" ]]; then
         case "$key" in
             worktree-dir|worktree_dir|ESPVM_WORKTREE_DIR)
-                if [[ -z "$value" ]]; then
-                    _espvm_red "Usage: espvm config set worktree-dir <path>"
-                    return 1
-                fi
-                # Expand ~ and convert to absolute path
+                [[ -z "$value" ]] && { _espvm_red "Usage: espvm config set worktree-dir <path>"; return 1; }
                 value="${value/#\~/$HOME}"
-                if [[ "$value" != /* ]]; then
-                    value="$(cd "$value" 2>/dev/null && pwd)" || value="$(pwd)/$value"
-                fi
-                # Block dangerous system paths to prevent accidental data loss
+                [[ "$value" != /* ]] && value="$(cd "$value" 2>/dev/null && pwd)" || value="$(pwd)/$value"
                 local blocked_paths="/ /usr /etc /var /opt /boot /proc /sys /dev /run /snap /bin /sbin /lib"
                 for blocked in $blocked_paths; do
-                    if [[ "$value" == "$blocked" || "$value" == "$blocked/" ]]; then
-                        _espvm_red "Error: Cannot set worktree-dir to a system path: $value"
-                        return 1
-                    fi
+                    [[ "$value" == "$blocked" || "$value" == "$blocked/" ]] && \
+                        { _espvm_red "Error: Cannot set worktree-dir to system path: $value"; return 1; }
                 done
-                # Resolve symlinks for safety
-                if [[ -d "$value" ]]; then
-                    value="$(cd "$value" 2>/dev/null && pwd -P)" || true
-                fi
-                # Must be under user's home directory or a known safe location
-                if [[ "$value" != "$HOME"/* && "$value" != "/tmp"* ]]; then
+                [[ -d "$value" ]] && value="$(cd "$value" 2>/dev/null && pwd -P)" || true
+                [[ "$value" != "$HOME"/* && "$value" != "/tmp"* ]] && {
                     _espvm_yellow "Warning: worktree-dir is outside \$HOME: $value"
                     _espvm_yellow "Ensure this path is safe and not a system directory."
-                fi
-                ESPVM_WORKTREE_DIR="$value"
-                _espvm_save_config
-                _espvm_green "worktree-dir set to: $ESPVM_WORKTREE_DIR"
-                ;;
+                }
+                ESPVM_WORKTREE_DIR="$value"; _espvm_save_config
+                _espvm_green "worktree-dir set to: $ESPVM_WORKTREE_DIR" ;;
             use-ssh|use_ssh|ESPVM_USE_SSH)
-                if [[ ! "$value" =~ ^(auto|yes|no)$ ]]; then
-                    _espvm_red "Usage: espvm config set use-ssh <auto|yes|no>"
-                    return 1
-                fi
-                ESPVM_USE_SSH="$value"
-                _espvm_save_config
-                _espvm_green "use-ssh set to: $ESPVM_USE_SSH"
-                ;;
-            *)
-                _espvm_red "Unknown config key: $key"
-                echo "Available keys: worktree-dir, use-ssh"
-                return 1
-                ;;
+                [[ ! "$value" =~ ^(auto|yes|no)$ ]] && { _espvm_red "Usage: espvm config set use-ssh <auto|yes|no>"; return 1; }
+                ESPVM_USE_SSH="$value"; _espvm_save_config
+                _espvm_green "use-ssh set to: $ESPVM_USE_SSH" ;;
+            *) _espvm_red "Unknown config key: $key"; echo "Available keys: worktree-dir, use-ssh"; return 1 ;;
         esac
         return 0
     fi
-
     if [[ "$action" == "reset" ]]; then
-        rm -f "$ESPVM_CONFIG_FILE"
-        _espvm_green "Configuration reset"
-        return 0
+        rm -f "$ESPVM_CONFIG_FILE"; _espvm_green "Configuration reset"; return 0
     fi
-
     _espvm_red "Unknown config action: $action"
     echo "Usage: espvm config [show|set <key> <value>|reset]"
     return 1
 }
 
-# Show help for SDK commands
-_espvm_sdk_help() {
-    local sdk="$1"
-    local sdk_name="${_ESPVM_SDKS[$sdk]}"
+# ── Help ──
 
+_espvm_sdk_help() {
+    local sdk="$1" sdk_name="${_ESPVM_SDKS[$sdk]}"
     cat << EOF
 Usage: espvm $sdk <command> [args]
 
@@ -1588,9 +817,6 @@ Commands:
   current                        Show active version
   repair                         Fix broken worktree links
 
-Flags:
-  -v, --verbose                  Show full output from install/export
-
 Examples:
   espvm $sdk install 5.4.1
   espvm $sdk use 5.4.1
@@ -1598,55 +824,6 @@ Examples:
 EOF
 }
 
-# Handle SDK subcommands
-_espvm_sdk_command() {
-    local sdk="$1"
-    local cmd="$2"
-    shift 2
-
-    case "$cmd" in
-        install)
-            _espvm_install "$sdk" "$@"
-            ;;
-        use)
-            _espvm_use "$sdk" "$@"
-            ;;
-        list)
-            _espvm_list "$sdk"
-            ;;
-        list-remote)
-            _espvm_list_remote "$sdk"
-            ;;
-        remove)
-            _espvm_remove "$sdk" "$@"
-            ;;
-        update)
-            _espvm_update "$sdk" "$@"
-            ;;
-        current)
-            _espvm_current "$sdk"
-            ;;
-        repair)
-            if ! _espvm_uses_worktree "$sdk"; then
-                _espvm_yellow "Repair not needed for ${_ESPVM_SDKS[$sdk]} (uses regular clones)"
-                return 0
-            fi
-            _espvm_ensure_bare "$sdk" || return 1
-            _espvm_repair_worktrees "$sdk"
-            _espvm_green "Worktree links repaired"
-            ;;
-        help|--help|-h|"")
-            _espvm_sdk_help "$sdk"
-            ;;
-        *)
-            _espvm_red "Unknown command: $cmd"
-            _espvm_sdk_help "$sdk"
-            return 1
-            ;;
-    esac
-}
-
-# Show main help
 espvm_help() {
     cat << 'EOF'
 espvm - ESP SDK Version Manager
@@ -1683,77 +860,68 @@ Examples:
   espvm ls            List IDF versions
   espvm -m ls         List Matter versions
   espvm status        Show what's active
-
 EOF
 }
 
-# Main entry point
-espvm() {
-    local sdk="idf"  # Default SDK
+# ── Command Dispatch ──
 
-    # Parse SDK flag first
+_espvm_sdk_command() {
+    local sdk="$1" cmd="$2"; shift 2
+    case "$cmd" in
+        install)     _espvm_install "$sdk" "$@" ;;
+        use)         _espvm_use "$sdk" "$@" ;;
+        list)        _espvm_list "$sdk" ;;
+        list-remote) _espvm_list_remote "$sdk" ;;
+        remove)      _espvm_remove "$sdk" "$@" ;;
+        update)      _espvm_update "$sdk" "$@" ;;
+        current)     _espvm_current "$sdk" ;;
+        repair)
+            if ! _espvm_uses_worktree "$sdk"; then
+                _espvm_yellow "Repair not needed for ${_ESPVM_SDKS[$sdk]} (uses regular clones)"; return 0
+            fi
+            _espvm_ensure_bare "$sdk" || return 1
+            _espvm_repair_worktrees "$sdk"
+            _espvm_green "Worktree links repaired" ;;
+        help|--help|-h|"") _espvm_sdk_help "$sdk" ;;
+        *) _espvm_red "Unknown command: $cmd"; _espvm_sdk_help "$sdk"; return 1 ;;
+    esac
+}
+
+# ── Entry Point ──
+
+espvm() {
+    local sdk="idf"
     case "$1" in
         -i) sdk="idf"; shift ;;
         -m) sdk="matter"; shift ;;
     esac
 
-    local cmd="$1"
-    shift 2>/dev/null || true
+    local cmd="$1"; shift 2>/dev/null || true
 
-    # Smart version detection: v5.4.1, 5.4.1, release/v5.0
+    # Bare version args (v5.4.1, 5.4.1, release/v5.0) route to 'use'
     if [[ "$cmd" =~ ^v?[0-9] ]] || [[ "$cmd" =~ ^release[/-] ]]; then
-        _espvm_use "$sdk" "$cmd" "$@"
-        return
+        _espvm_use "$sdk" "$cmd" "$@"; return
     fi
 
     case "$cmd" in
-        # Legacy full names still work
-        idf|matter)
-            _espvm_sdk_command "$cmd" "$@"
-            ;;
-        # Commands use selected SDK
-        i|install)
-            _espvm_sdk_command "$sdk" "install" "$@"
-            ;;
-        use)
-            _espvm_sdk_command "$sdk" "use" "$@"
-            ;;
-        ls|list)
-            _espvm_list "$sdk"
-            ;;
-        remote|list-remote)
-            _espvm_list_remote "$sdk"
-            ;;
-        rm|remove)
-            _espvm_remove "$sdk" "$@"
-            ;;
-        update)
-            _espvm_update "$sdk" "$@"
-            ;;
-        current)
-            _espvm_current "$sdk"
-            ;;
-        repair)
-            _espvm_sdk_command "$sdk" "repair"
-            ;;
-        status)
-            _espvm_status
-            ;;
-        config)
-            espvm_config "$@"
-            ;;
-        help|--help|-h|"")
-            espvm_help
-            ;;
-        *)
-            _espvm_red "Unknown: $cmd"
-            espvm_help
-            return 1
-            ;;
+        idf|matter)       _espvm_sdk_command "$cmd" "$@" ;;
+        i|install)        _espvm_sdk_command "$sdk" "install" "$@" ;;
+        use)              _espvm_sdk_command "$sdk" "use" "$@" ;;
+        ls|list)          _espvm_list "$sdk" ;;
+        remote|list-remote) _espvm_list_remote "$sdk" ;;
+        rm|remove)        _espvm_remove "$sdk" "$@" ;;
+        update)           _espvm_update "$sdk" "$@" ;;
+        current)          _espvm_current "$sdk" ;;
+        repair)           _espvm_sdk_command "$sdk" "repair" ;;
+        status)           _espvm_status ;;
+        config)            espvm_config "$@" ;;
+        help|--help|-h|"") espvm_help ;;
+        *) _espvm_red "Unknown: $cmd"; espvm_help; return 1 ;;
     esac
 }
 
-# Bash completion for espvm
+# ── Completions ──
+
 _espvm_completions() {
     local cur prev words cword
     _init_completion 2>/dev/null || {
@@ -1764,106 +932,70 @@ _espvm_completions() {
         cword=$COMP_CWORD
     }
 
-    # Determine SDK from flags
-    local sdk="idf"
-    local cmd_index=1
-    for ((i=1; i < cword; i++)); do
+    local sdk="idf" cmd_index=1
+    for ((i=1; i<cword; i++)); do
         case "${words[i]}" in
             -i) sdk="idf"; ((cmd_index++)) ;;
             -m) sdk="matter"; ((cmd_index++)) ;;
         esac
     done
 
-    # Get the command (after SDK flag)
     local cmd=""
-    if [[ $cword -gt $cmd_index ]]; then
-        cmd="${words[cmd_index]}"
-    fi
-
-    # Commands list
+    [[ $cword -gt $cmd_index ]] && cmd="${words[cmd_index]}"
     local commands="i install use ls list remote list-remote rm remove update current repair status config help idf matter"
     local sdk_flags="-i -m"
-    local config_actions="show set reset"
-    local config_keys="worktree-dir use-ssh"
 
-    # Completing SDK flag or command
     if [[ $cword -eq 1 ]]; then
-        COMPREPLY=($(compgen -W "$sdk_flags $commands" -- "$cur"))
-        return
+        COMPREPLY=($(compgen -W "$sdk_flags $commands" -- "$cur")); return
     fi
-
-    # After SDK flag, complete commands
     if [[ $cword -eq 2 && ("${words[1]}" == "-i" || "${words[1]}" == "-m") ]]; then
-        COMPREPLY=($(compgen -W "$commands" -- "$cur"))
-        return
+        COMPREPLY=($(compgen -W "$commands" -- "$cur")); return
     fi
 
-    # Get installed versions for completion
     _espvm_get_installed_versions() {
-        local sdk="$1"
+        local s="$1"
         _espvm_load_config 2>/dev/null
-        local sdk_name="${_ESPVM_SDKS[$sdk]}"
-        local worktree_dir="${ESPVM_WORKTREE_DIR:-$HOME/.espressif/versions}"
-        local sdk_dir="$worktree_dir/$sdk_name"
-        if [[ -d "$sdk_dir" ]]; then
-            for dir in "$sdk_dir"/*/; do
-                [[ -d "$dir" ]] || continue
-                local ver=$(basename "$dir")
-                [[ "$ver" == .* ]] && continue
-                echo "$ver"
+        local sname="${_ESPVM_SDKS[$s]}" wdir="${ESPVM_WORKTREE_DIR:-$HOME/.espressif/versions}" sdir="$wdir/$sname"
+        if [[ -d "$sdir" ]]; then
+            for d in "$sdir"/*/; do
+                [[ -d "$d" ]] || continue
+                local v; v="$(basename "$d")"
+                [[ "$v" == .* ]] && continue
+                echo "$v"
             done
         fi
     }
 
-    # Command-specific completions
     case "$cmd" in
         use|rm|remove|update)
             local versions=$(_espvm_get_installed_versions "$sdk")
-            COMPREPLY=($(compgen -W "$versions" -- "$cur"))
-            ;;
+            COMPREPLY=($(compgen -W "$versions" -- "$cur")) ;;
         i|install)
-            # Could fetch remote versions but that's slow, just offer flags
-            COMPREPLY=($(compgen -W "-v --verbose -f --force --path" -- "$cur"))
-            ;;
+            COMPREPLY=($(compgen -W "-v --verbose -f --force --path" -- "$cur")) ;;
         config)
             case "$prev" in
-                config)
-                    COMPREPLY=($(compgen -W "$config_actions" -- "$cur"))
-                    ;;
-                set)
-                    COMPREPLY=($(compgen -W "$config_keys" -- "$cur"))
-                    ;;
-                use-ssh)
-                    COMPREPLY=($(compgen -W "auto yes no" -- "$cur"))
-                    ;;
-            esac
-            ;;
+                config) COMPREPLY=($(compgen -W "show set reset" -- "$cur")) ;;
+                set)    COMPREPLY=($(compgen -W "worktree-dir use-ssh" -- "$cur")) ;;
+                use-ssh) COMPREPLY=($(compgen -W "auto yes no" -- "$cur")) ;;
+            esac ;;
         idf|matter)
-            # Legacy syntax: espvm idf <cmd>
             if [[ $prev == "idf" || $prev == "matter" ]]; then
                 COMPREPLY=($(compgen -W "install use list list-remote remove update current repair help" -- "$cur"))
             else
                 local subcmd="${words[cmd_index+1]}"
                 case "$subcmd" in
                     use|remove|update)
-                        local target_sdk="$cmd"
-                        local versions=$(_espvm_get_installed_versions "$target_sdk")
-                        COMPREPLY=($(compgen -W "$versions" -- "$cur"))
-                        ;;
+                        local versions=$(_espvm_get_installed_versions "$cmd")
+                        COMPREPLY=($(compgen -W "$versions" -- "$cur")) ;;
                 esac
-            fi
-            ;;
+            fi ;;
     esac
 }
 
-# Register completion when sourced
 _espvm_register_completion() {
     if command -v complete >/dev/null 2>&1; then
-        complete -F _espvm_completions espvm 2>/dev/null
-        return
+        complete -F _espvm_completions espvm 2>/dev/null; return
     fi
-
-    # zsh: enable bash-style completion compatibility
     if [[ -n "${ZSH_VERSION:-}" ]]; then
         autoload -Uz bashcompinit 2>/dev/null || return
         bashcompinit 2>/dev/null || return
@@ -1872,7 +1004,5 @@ _espvm_register_completion() {
 }
 _espvm_register_completion
 
-# If script is executed (not sourced), run main function
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    espvm "$@"
-fi
+# Allow direct execution as fallback (sourcing is the primary usage)
+[[ "${BASH_SOURCE[0]}" == "${0}" ]] && espvm "$@"
