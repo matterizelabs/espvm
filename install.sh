@@ -31,6 +31,10 @@ command -v python3 &>/dev/null || die "Error: python3 is required"
 # ── Pin to commit if requested ──
 
 if [[ -n "$ESPVM_COMMIT_REF" ]]; then
+    # Validate commit ref contains only safe characters (sha1 hashes, branch names)
+    if [[ ! "$ESPVM_COMMIT_REF" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+        die "Error: ESPVM_COMMIT_REF contains invalid characters: $ESPVM_COMMIT_REF"
+    fi
     ESPVM_SCRIPT_URL=$(echo "$ESPVM_SCRIPT_URL" | sed -E "s|/refs/(heads|tags)/[^/]+|/$ESPVM_COMMIT_REF|")
     ESPVM_SHA256_URL="${ESPVM_SCRIPT_URL}.sha256"
     echo "Pinned to commit: $ESPVM_COMMIT_REF"
