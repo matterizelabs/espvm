@@ -9,6 +9,10 @@ _espvm_validate_config_dir() {
     [[ "$dir" == */../* || "$dir" == */.. ]] && \
         { echo "Error: ESPVM_CONFIG_DIR contains path traversal: $dir" >&2; return 1; }
     [[ -d "$dir" ]] && dir="$(cd "$dir" 2>/dev/null && pwd -P)" || true
+    case "$dir" in
+        "$HOME"|"$HOME"/*|/etc/espvm|/etc/espvm/*|/opt/espvm|/opt/espvm/*) ;;
+        *) echo "Warning: ESPVM_CONFIG_DIR is outside \$HOME, /etc/espvm, /opt/espvm: $dir" >&2 ;;
+    esac
     echo "$dir"
 }
 
@@ -53,10 +57,23 @@ _espvm_confirm() {
 
 # ── Security & Validation ──
 
+_espvm_realpath() {
+    local p="$1"
+    if command -v realpath &>/dev/null; then realpath -m "$p" 2>/dev/null || echo "$p"
+    elif command -v readlink &>/dev/null; then readlink -f "$p" 2>/dev/null || echo "$p"
+    else (cd "$p" 2>/dev/null && pwd -P) 2>/dev/null || echo "$p"
+    fi
+}
+
 _espvm_safe_rm_rf() {
     local target="$1" wt="$(_espvm_get_worktree_dir)"
     [[ -z "$target" || "$target" == "/" ]] && { _espvm_red "Error: Refusing to remove: $target"; return 1; }
-    [[ "$target" == "$wt"/* || "$target" == "$ESPVM_CONFIG_DIR"/* ]] && { rm -rf "$target"; return $?; }
+    local real_target real_wt real_config
+    real_target="$(_espvm_realpath "$target")"
+    real_wt="$(_espvm_realpath "$wt")"
+    real_config="$(_espvm_realpath "$ESPVM_CONFIG_DIR")"
+    [[ -z "$real_target" || "$real_target" == "/" ]] && { _espvm_red "Error: Refusing to remove: $target"; return 1; }
+    [[ "$real_target" == "$real_wt"/* || "$real_target" == "$real_config"/* ]] && { rm -rf "$target"; return $?; }
     _espvm_red "Error: Refusing to remove directory outside safe locations: $target"; return 1
 }
 
@@ -64,6 +81,8 @@ _espvm_validate_version() {
     local version="$1"
     [[ -z "$version" ]] && { _espvm_red "Error: Version cannot be empty"; return 1; }
     [[ "$version" == -* ]] && { _espvm_red "Error: Version cannot start with '-': $version"; return 1; }
+    [[ "$version" == "." || "$version" == ".." || "$version" == */. || "$version" == */.. || "$version" == ./* || "$version" == ../* ]] && \
+        { _espvm_red "Error: Version contains path traversal component: $version"; return 1; }
     [[ ! "$version" =~ ^[a-zA-Z0-9._/-]+$ ]] && { _espvm_red "Error: Invalid characters in version: $version"; return 1; }
     return 0
 }
@@ -75,11 +94,13 @@ _espvm_validate_config_value() {
 }
 
 _espvm_enforce_secure_git() {
-    local gitconfig
-    gitconfig="$(mktemp "${TMPDIR:-/tmp}/espvm-gitconfig.XXXXXX")" || { _espvm_red "Error: Failed to create temp git config"; return 1; }
-    git config -f "$gitconfig" url."https://".insteadOf "git://" 2>/dev/null
-    git config -f "$gitconfig" protocol.file.allow never 2>/dev/null
-    git config -f "$gitconfig" protocol.ext.allow never 2>/dev/null
+    local gitconfig="$ESPVM_CONFIG_DIR/git-secure.config"
+    if [[ ! -f "$gitconfig" ]]; then
+        mkdir -p "$ESPVM_CONFIG_DIR"
+        git config -f "$gitconfig" url."https://".insteadOf "git://" 2>/dev/null
+        git config -f "$gitconfig" protocol.file.allow never 2>/dev/null
+        git config -f "$gitconfig" protocol.ext.allow never 2>/dev/null
+    fi
     export GIT_CONFIG_GLOBAL="$gitconfig"
 }
 
@@ -231,6 +252,11 @@ _espvm_get_worktree_dir() {
             custom_path="${custom_path/#\~/$HOME}"
             [[ "$custom_path" == /* ]] || custom_path="$(cd "$custom_path" 2>/dev/null && pwd -P)" || {
                 _espvm_red "Error: Invalid path: $custom_path" >&2; return 1
+            }
+            [[ "$custom_path" == / || "$custom_path" == /usr/* || "$custom_path" == /etc/* || \
+               "$custom_path" == /var/* || "$custom_path" == /proc/* || "$custom_path" == /sys/* || \
+               "$custom_path" == /boot/* || "$custom_path" == /dev/* ]] && {
+                _espvm_red "Error: Cannot set worktree-dir to system path: $custom_path" >&2; return 1
             }
             ESPVM_WORKTREE_DIR="$custom_path" ;;
         *) ESPVM_WORKTREE_DIR="$HOME/.espressif/versions" ;;
@@ -490,6 +516,10 @@ _espvm_install_idf() {
     if git -C "$bare_dir" tag -v "$version" &>/dev/null; then
         _espvm_green "Tag signature verified for $version"
     else
+        if [[ "${ESPVM_STRICT_SIGNED_TAGS:-0}" == "1" ]]; then
+            _espvm_red "Error: Tag $version is not signed or signature could not be verified (ESPVM_STRICT_SIGNED_TAGS=1)"
+            return 1
+        fi
         _espvm_yellow "Warning: Tag $version is not signed or signature could not be verified"
         _espvm_confirm "Continue with unsigned tag?" || { _espvm_red "Aborting"; return 1; }
     fi
@@ -520,6 +550,17 @@ _espvm_install_matter() {
     echo "Cloning $version..."
     git clone --depth 1 --branch "$version" -- "$repo_url" "$version_dir" 2>/dev/null || \
         { _espvm_red "Error: Failed to clone $version"; return 1; }
+
+    if git -C "$version_dir" tag -v "$version" &>/dev/null; then
+        _espvm_green "Tag signature verified for $version"
+    else
+        if [[ "${ESPVM_STRICT_SIGNED_TAGS:-0}" == "1" ]]; then
+            _espvm_red "Error: Tag $version is not signed or signature could not be verified (ESPVM_STRICT_SIGNED_TAGS=1)"
+            _espvm_safe_rm_rf "$version_dir"; return 1
+        fi
+        _espvm_yellow "Warning: Tag $version is not signed or signature could not be verified"
+        _espvm_confirm "Continue with unsigned tag?" || { _espvm_safe_rm_rf "$version_dir"; _espvm_red "Aborting"; return 1; }
+    fi
 
     echo "Initializing submodules..."
     git -C "$version_dir" submodule update --init --depth 1 || {
@@ -553,6 +594,7 @@ _espvm_use() {
     [[ -z "$version" ]] && { _espvm_red "Usage: espvm $sdk use <version> [-v]"; return 1; }
     local sdk_name="${_ESPVM_SDKS[$sdk]}"
     version="$(_espvm_resolve_version "$version")" || return 1
+    _espvm_enforce_secure_git
     local encoded_version="$(_espvm_encode_version "$version")"
     local sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
     local version_dir="$sdk_dir/$encoded_version"
@@ -770,7 +812,8 @@ espvm_config() {
                 _espvm_validate_config_value "$value" || return 1
                 value="${value/#\~/$HOME}"
                 [[ "$value" == /* ]] || value="$(cd "$value" 2>/dev/null && pwd -P)" || { _espvm_red "Error: Invalid path: $value"; return 1; }
-                [[ "$value" == / || "$value" == /usr/* || "$value" == /etc/* || "$value" == /var/* ]] && \
+                [[ "$value" == / || "$value" == /usr/* || "$value" == /etc/* || "$value" == /var/* || \
+                   "$value" == /proc/* || "$value" == /sys/* || "$value" == /boot/* || "$value" == /dev/* ]] && \
                     { _espvm_red "Error: Cannot set worktree-dir to system path: $value"; return 1; }
                 ESPVM_WORKTREE_DIR="$value"; _espvm_save_config
                 _espvm_green "worktree-dir set to: $ESPVM_WORKTREE_DIR" ;;

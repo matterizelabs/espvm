@@ -24,7 +24,8 @@ _espvm_sha256() {
 
 # ── Validate ──
 
-[[ "$ESPVM_SCRIPT_URL" == https://* ]] || die "Error: ESPVM_SCRIPT_URL must use HTTPS: $ESPVM_SCRIPT_URL"
+[[ "$ESPVM_SCRIPT_URL" == https://* || "$ESPVM_SCRIPT_URL" == file://* ]] || die "Error: ESPVM_SCRIPT_URL must use HTTPS or file://: $ESPVM_SCRIPT_URL"
+[[ "$ESPVM_SHA256_URL" == https://* || "$ESPVM_SHA256_URL" == file://* ]] || die "Error: ESPVM_SHA256_URL must use HTTPS or file://: $ESPVM_SHA256_URL"
 command -v git &>/dev/null || die "Error: git is required"
 command -v python3 &>/dev/null || die "Error: python3 is required"
 
@@ -72,11 +73,11 @@ else
             remote_hash=$(cut -d' ' -f1 "$sha256_file" 2>/dev/null || echo "")
             actual_hash=$(_espvm_sha256 "$ESPVM_INSTALL_DIR/espvm")
             if [[ -n "$remote_hash" && -n "$actual_hash" && "$remote_hash" != "$actual_hash" ]]; then
-                yellow "Warning: SHA-256 mismatch with remote .sha256 file"
-                yellow "  Remote: $remote_hash"
-                yellow "  Actual: $actual_hash"
-                read -rp "Continue anyway? [y/N]: " answer
-                [[ "$answer" =~ ^[Yy]$ ]] || { rm -f "$ESPVM_INSTALL_DIR/espvm" "$sha256_file"; exit 1; }
+                red "Error: SHA-256 checksum mismatch with remote .sha256 file"
+                red "  Remote: $remote_hash"
+                red "  Actual: $actual_hash"
+                rm -f "$ESPVM_INSTALL_DIR/espvm" "$sha256_file"
+                exit 1
             elif [[ -n "$remote_hash" && -n "$actual_hash" ]]; then
                 green "SHA-256 checksum verified against remote"
             fi
@@ -93,19 +94,25 @@ if [[ -n "$ESPVM_GPG_KEY" ]]; then
     if command -v gpg &>/dev/null; then
         sig_url="${ESPVM_SCRIPT_URL}.sig"
         sig_file=$(mktemp "${TMPDIR:-/tmp}/espvm-sig.XXXXXX" 2>/dev/null) || sig_file=""
-        if [[ -n "$sig_file" ]]; then
-            echo "Verifying GPG signature..."
+        keyring=$(mktemp "${TMPDIR:-/tmp}/espvm-keyring.XXXXXX" 2>/dev/null) || keyring=""
+        if [[ -n "$sig_file" && -n "$keyring" ]]; then
+            echo "Verifying GPG signature with key $ESPVM_GPG_KEY..."
             if curl -fsSL "$sig_url" -o "$sig_file" 2>/dev/null; then
-                if gpg --verify "$sig_file" "$ESPVM_INSTALL_DIR/espvm" 2>/dev/null; then
-                    green "GPG signature verified"
+                if [[ -f "$ESPVM_GPG_KEY" ]]; then
+                    gpg --no-default-keyring --keyring "$keyring" --import "$ESPVM_GPG_KEY" 2>/dev/null
                 else
-                    rm -f "$ESPVM_INSTALL_DIR/espvm" "$sig_file"
+                    gpg --no-default-keyring --keyring "$keyring" --recv-keys "$ESPVM_GPG_KEY" 2>/dev/null
+                fi
+                if gpg --no-default-keyring --keyring "$keyring" --verify "$sig_file" "$ESPVM_INSTALL_DIR/espvm" 2>/dev/null; then
+                    green "GPG signature verified with key $ESPVM_GPG_KEY"
+                else
+                    rm -f "$ESPVM_INSTALL_DIR/espvm" "$sig_file" "$keyring"
                     die "Error: GPG signature verification failed!"
                 fi
             else
                 yellow "Warning: Could not download GPG signature file"
             fi
-            rm -f "$sig_file"
+            rm -f "$sig_file" "$keyring"
         fi
     else
         yellow "Warning: ESPVM_GPG_KEY is set but gpg is not installed. Skipping."
