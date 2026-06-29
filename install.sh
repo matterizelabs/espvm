@@ -69,7 +69,7 @@ if [[ -n "$ESPVM_SHA256_EXPECTED" ]]; then
 else
     sha256_file=$(mktemp "${TMPDIR:-/tmp}/espvm-sha256.XXXXXX" 2>/dev/null) || sha256_file=""
     if [[ -n "$sha256_file" ]] && command -v curl &>/dev/null; then
-        if curl -fsSL "$ESPVM_SHA256_URL" -o "$sha256_file" 2>/dev/null; then
+        if curl -fsSL "$ESPVM_SHA256_URL?t=$(date +%s)" -o "$sha256_file" 2>/dev/null; then
             remote_hash=$(cut -d' ' -f1 "$sha256_file" 2>/dev/null || echo "")
             actual_hash=$(_espvm_sha256 "$ESPVM_INSTALL_DIR/espvm")
             if [[ -n "$remote_hash" && -n "$actual_hash" && "$remote_hash" != "$actual_hash" ]]; then
