@@ -330,18 +330,6 @@ _espvm_warn_insecure_url() {
 
 # ── Quiet Execution ──
 
-_espvm_run_quiet() {
-    local tmpfile; tmpfile="$(mktemp "${TMPDIR:-/tmp}/espvm.XXXXXX")" || return 1
-    chmod 600 "$tmpfile"
-    if [[ $_ESPVM_VERBOSE -eq 1 ]]; then
-        "$@"; local ret=$?; rm -f "$tmpfile"; return $ret
-    else
-        "$@" > "$tmpfile" 2>&1; local ret=$?
-        [[ $ret -ne 0 ]] && cat "$tmpfile"
-        rm -f "$tmpfile"; return $ret
-    fi
-}
-
 _espvm_source_quiet() {
     local script="$1" sdk="$2"
     local script_dir; script_dir="$(cd "$(dirname "$script")" && pwd)"
@@ -486,9 +474,9 @@ _espvm_run_install() {
     _espvm_verify_script_hash "$version_dir/install.sh" "install.sh" || return 1
     local install_args="${_ESPVM_SDK_INSTALL_ARGS[$sdk]}"
     if [[ -n "$install_args" ]]; then
-        (cd "$version_dir" && _espvm_run_quiet ./install.sh "$install_args")
+        (cd "$version_dir" && ./install.sh "$install_args")
     else
-        (cd "$version_dir" && _espvm_run_quiet ./install.sh)
+        (cd "$version_dir" && ./install.sh)
     fi
 }
 
@@ -498,11 +486,11 @@ _espvm_maybe_install() {
     if [[ "$sdk" == "idf" && "$force" -ne 1 ]] && _espvm_check_tools "$version_dir"; then
         _espvm_ok "Tools already installed for $version"; return 0
     fi
-    _espvm_info_n "Installing tools for $version... "
+    _espvm_info "Installing tools for $version"
     if _espvm_run_install "$version_dir" "$sdk"; then
-        _espvm_ok "done"; return 0
+        _espvm_ok "Tools installed for $version"; return 0
     else
-        _espvm_error "failed"; return 1
+        _espvm_error "Tools installation failed for $version"; return 1
     fi
 }
 
