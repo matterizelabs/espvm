@@ -354,8 +354,10 @@ _espvm_source_quiet() {
         source "$script"; local ret=$?; rm -f "$tmpfile"; return $ret
     else
         source "$script" > "$tmpfile" 2>&1; local ret=$?
-        if grep -qE "(FAILED|ERROR:)" "$tmpfile"; then
-            cat "$tmpfile"; rm -f "$tmpfile"; return 1
+        if [[ $ret -ne 0 ]] || grep -qE "(FAILED|ERROR:)" "$tmpfile"; then
+            grep -E "(FAILED|error:|ERROR:|Error:)" "$tmpfile" | head -20
+            _espvm_info "Run with -v or ESPVM_VERBOSE=1 for full output"
+            rm -f "$tmpfile"; return 1
         fi
         rm -f "$tmpfile"; return $ret
     fi
