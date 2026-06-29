@@ -146,8 +146,7 @@ _espvm_verify_script_hash() {
 
 _espvm_verify_version_origin() {
     local version_dir="$1"
-    # Missing .git is a hard failure, not silently ignored
-    if [[ ! -d "$version_dir/.git" ]]; then
+    if [[ ! -e "$version_dir/.git" ]]; then
         _espvm_red "Error: $version_dir is not a git repository — refusing to source"
         return 1
     fi
@@ -167,7 +166,7 @@ _espvm_verify_version_origin() {
 }
 
 _espvm_verify_install_integrity() {
-    [[ ! -d "$1/.git" ]] && { _espvm_red "Error: $1 is not a git repository"; return 1; }
+    [[ ! -e "$1/.git" ]] && { _espvm_red "Error: $1 is not a git repository"; return 1; }
     git -C "$1" diff --quiet -- install.sh && \
     git -C "$1" diff --quiet HEAD -- install.sh
 }
@@ -176,7 +175,7 @@ _espvm_verify_python_script() {
     local script_path="$1"
     local script_dir; script_dir="$(cd "$(dirname "$script_path")" && pwd)"
     local script_name; script_name="$(basename "$script_path")"
-    [[ ! -d "$script_dir/.git" ]] && { _espvm_red "Error: $script_dir is not a git repository"; return 1; }
+    [[ ! -e "$script_dir/.git" ]] && { _espvm_red "Error: $script_dir is not a git repository"; return 1; }
     git -C "$script_dir" diff --quiet -- "$script_name" && \
     git -C "$script_dir" diff --quiet HEAD -- "$script_name"
 }
@@ -219,7 +218,8 @@ _espvm_save_config() {
 # ── Path & Version Helpers ──
 
 _espvm_get_active_path() {
-    local sdk="$1" env_var="${_ESPVM_SDK_ENV_VAR[$sdk]}"
+    local sdk="$1"
+    local env_var="${_ESPVM_SDK_ENV_VAR[$sdk]}"
     case "$env_var" in
         IDF_PATH|ESP_MATTER_PATH) ;;
         *) _espvm_red "Error: Unknown SDK env var: $env_var"; return 1 ;;
@@ -286,7 +286,8 @@ _espvm_check_ssh() {
 }
 
 _espvm_get_repo_url() {
-    local sdk="$1" sdk_repo="${_ESPVM_SDK_REPOS[$sdk]}"
+    local sdk="$1"
+    local sdk_repo="${_ESPVM_SDK_REPOS[$sdk]}"
     _espvm_load_config
     local use_ssh="${ESPVM_USE_SSH:-auto}"
     if [[ "$use_ssh" == "auto" ]]; then
@@ -352,7 +353,8 @@ _espvm_run_python_script() {
 # ── Git Operations ──
 
 _espvm_init_bare() {
-    local sdk="$1" bare_dir="$(_espvm_get_bare_dir "$sdk")"
+    local sdk="$1"
+    local bare_dir="$(_espvm_get_bare_dir "$sdk")"
     local repo_url="$(_espvm_get_repo_url "$sdk")" sdk_name="${_ESPVM_SDKS[$sdk]}"
     if [[ ! -d "$bare_dir" ]]; then
         echo "Initializing $sdk_name repository..."
@@ -366,7 +368,8 @@ _espvm_init_bare() {
 }
 
 _espvm_ensure_bare() {
-    local sdk="$1" bare_dir="$(_espvm_get_bare_dir "$sdk")"
+    local sdk="$1"
+    local bare_dir="$(_espvm_get_bare_dir "$sdk")"
     if [[ ! -d "$bare_dir" ]]; then
         _espvm_yellow "Bare repository missing, reinitializing..."
         _espvm_init_bare "$sdk" || return 1
@@ -401,7 +404,8 @@ _espvm_path_remove() {
 }
 
 _espvm_clear_sdk_env() {
-    local sdk="$1" active_path="$(_espvm_get_active_path "$sdk")"
+    local sdk="$1"
+    local active_path="$(_espvm_get_active_path "$sdk")"
     [[ -n "$active_path" ]] && PATH="$(_espvm_path_remove "$active_path")"
     if [[ "$sdk" == "idf" ]]; then
         [[ -n "$IDF_TOOLS_PATH" ]] && PATH="$(_espvm_path_remove "$IDF_TOOLS_PATH")"
@@ -413,7 +417,8 @@ _espvm_clear_sdk_env() {
 }
 
 _espvm_check_sdk_deps() {
-    local sdk="$1" requires="${_ESPVM_SDK_REQUIRES[$sdk]}"
+    local sdk="$1"
+    local requires="${_ESPVM_SDK_REQUIRES[$sdk]}"
     if [[ -n "$requires" ]] && ! _espvm_is_active "$requires"; then
         _espvm_red "Error: ${_ESPVM_SDKS[$sdk]} requires ${_ESPVM_SDKS[$requires]} to be active"
         echo "Run 'espvm use <version>' first" >&2; return 1
@@ -645,7 +650,8 @@ _espvm_use() {
 }
 
 _espvm_verify_activation() {
-    local sdk="$1" version_dir="$2" active_path="$(_espvm_get_active_path "$sdk")"
+    local sdk="$1" version_dir="$2"
+    local active_path="$(_espvm_get_active_path "$sdk")"
     [[ "$active_path" == "$version_dir" ]] || return 1
     [[ "$sdk" == "idf" ]] && ! command -v idf.py &>/dev/null && return 1
     return 0
@@ -728,7 +734,8 @@ _espvm_update() {
 # ── List ──
 
 _espvm_list() {
-    local sdk="$1" sdk_name="${_ESPVM_SDKS[$sdk]}" sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
+    local sdk="$1"
+    local sdk_name="${_ESPVM_SDKS[$sdk]}" sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
     [[ ! -d "$sdk_dir" ]] && { echo "No $sdk_name versions installed"; return 0; }
     echo "Installed $sdk_name versions:"
     local found=0
@@ -749,7 +756,8 @@ _espvm_list() {
 }
 
 _espvm_list_remote() {
-    local sdk="$1" sdk_name="${_ESPVM_SDKS[$sdk]}" repo_url="$(_espvm_get_repo_url "$sdk")"
+    local sdk="$1"
+    local sdk_name="${_ESPVM_SDKS[$sdk]}" repo_url="$(_espvm_get_repo_url "$sdk")"
     _espvm_warn_insecure_url "$repo_url"
     echo "Fetching available $sdk_name versions..."
     echo ""
@@ -765,7 +773,8 @@ _espvm_list_remote() {
 }
 
 _espvm_current() {
-    local sdk="$1" sdk_name="${_ESPVM_SDKS[$sdk]}" current_file="$(_espvm_get_current_file "$sdk")"
+    local sdk="$1"
+    local sdk_name="${_ESPVM_SDKS[$sdk]}" current_file="$(_espvm_get_current_file "$sdk")"
     if [[ -f "$current_file" ]]; then
         local current="$(_espvm_decode_version "$(cat "$current_file")")"
         echo "Current $sdk_name version: $current"
@@ -836,7 +845,8 @@ espvm_config() {
 # ── Help ──
 
 _espvm_sdk_help() {
-    local sdk="$1" sdk_name="${_ESPVM_SDKS[$sdk]}"
+    local sdk="$1"
+    local sdk_name="${_ESPVM_SDKS[$sdk]}"
     cat << EOF
 Usage: espvm $sdk <command> [args]
 
