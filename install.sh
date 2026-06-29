@@ -10,9 +10,10 @@ ESPVM_GPG_KEY="${ESPVM_GPG_KEY:-}"
 ESPVM_COMMIT_REF="${ESPVM_COMMIT_REF:-}"
 ESPVM_RELEASE_TAG="${ESPVM_RELEASE_TAG:-}"
 
-red()   { echo -e "\033[0;31m$1\033[0m"; }
-green() { echo -e "\033[0;32m$1\033[0m"; }
-yellow(){ echo -e "\033[0;33m$1\033[0m"; }
+red()   { printf '\033[0;31m%s\033[0m\n' "$*"; }
+green() { printf '\033[0;32m%s\033[0m\n' "$*"; }
+yellow(){ printf '\033[0;33m%s\033[0m\n' "$*"; }
+info()  { printf '\033[0;34m%s\033[0m\n' "$*"; }
 
 die()   { red "$1"; exit 1; }
 
@@ -46,7 +47,7 @@ if [[ -z "$ESPVM_SCRIPT_URL" ]]; then
                 | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
             [[ -n "$ref" ]] || die "Error: Could not determine latest release tag for $ESPVM_REPO"
         fi
-        echo "Using latest release: $ref"
+        info "Using latest release: $ref"
     fi
     ESPVM_SCRIPT_URL="https://github.com/$ESPVM_REPO/releases/download/$ref/espvm"
     [[ -z "$ESPVM_SHA256_URL" ]] && \
@@ -62,7 +63,7 @@ fi
 # ── Download ──
 
 mkdir -p "$ESPVM_INSTALL_DIR"
-echo "Downloading espvm..."
+info "Downloading espvm..."
 if command -v curl &>/dev/null; then
     curl -fsSL "$ESPVM_SCRIPT_URL" -o "$ESPVM_INSTALL_DIR/espvm"
 elif command -v wget &>/dev/null; then
@@ -114,7 +115,7 @@ if [[ -n "$ESPVM_GPG_KEY" ]]; then
         sig_file=$(mktemp "${TMPDIR:-/tmp}/espvm-sig.XXXXXX" 2>/dev/null) || sig_file=""
         keyring=$(mktemp "${TMPDIR:-/tmp}/espvm-keyring.XXXXXX" 2>/dev/null) || keyring=""
         if [[ -n "$sig_file" && -n "$keyring" ]]; then
-            echo "Verifying GPG signature with key $ESPVM_GPG_KEY..."
+            info "Verifying GPG signature with key $ESPVM_GPG_KEY..."
             if curl -fsSL "$sig_url" -o "$sig_file" 2>/dev/null; then
                 if [[ -f "$ESPVM_GPG_KEY" ]]; then
                     gpg --no-default-keyring --keyring "$keyring" --import "$ESPVM_GPG_KEY" 2>/dev/null
@@ -176,10 +177,10 @@ fi
 echo ""
 green "Installation complete!"
 echo ""
-echo "Run: source $SHELL_RC"
-echo "Or restart your terminal."
+info "Run: source $SHELL_RC"
+info "Or restart your terminal."
 echo ""
-echo "Quick start:"
+info "Quick start:"
 echo "  espvm i 5.4.1     Install ESP-IDF v5.4.1"
 echo "  espvm 5.4.1        Activate ESP-IDF v5.4.1"
 echo "  espvm -m i 1.4    Install ESP-Matter v1.4"

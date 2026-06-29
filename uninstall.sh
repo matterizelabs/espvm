@@ -6,9 +6,9 @@ ESPVM_CONFIG_DIR="${ESPVM_CONFIG_DIR:-$HOME/.espressif/.espvm}"
 ESPVM_WORKTREE_DIR="${ESPVM_WORKTREE_DIR:-}"
 PURGE=0
 
-red()   { echo -e "\033[0;31m$1\033[0m"; }
-green() { echo -e "\033[0;32m$1\033[0m"; }
-yellow(){ echo -e "\033[0;33m$1\033[0m"; }
+red()   { printf '\033[0;31m%s\033[0m\n' "$*"; }
+green() { printf '\033[0;32m%s\033[0m\n' "$*"; }
+yellow(){ printf '\033[0;33m%s\033[0m\n' "$*"; }
 
 die()   { red "$1"; exit 1; }
 
