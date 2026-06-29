@@ -454,6 +454,18 @@ _espvm_check_sdk_deps() {
     return 0
 }
 
+_espvm_off() {
+    local sdk="$1" sdk_name="${_ESPVM_SDKS[$sdk]}"
+    if ! _espvm_is_active "$sdk"; then
+        _espvm_warn "$sdk_name is not active"
+        return 0
+    fi
+    _espvm_clear_sdk_env "$sdk"
+    local current_file="$(_espvm_get_current_file "$sdk")"
+    rm -f "$current_file"
+    _espvm_ok "$sdk_name deactivated"
+}
+
 # ── Install ──
 
 _espvm_check_tools() {
@@ -863,6 +875,7 @@ Usage: espvm $sdk <command> [args]
 Commands:
   install <ver> [-v] [--force]   Install version (tag or branch)
   use <ver> [-v]                 Activate version in current shell
+  off                            Deactivate in current shell
   list                           List installed versions
   list-remote                    List available tags and branches
   remove <ver>                   Remove installed version
@@ -892,6 +905,7 @@ SDK Flags:
 Commands:
   i <ver>         Install version
   use <ver>       Activate version
+  off             Deactivate
   ls              List installed
   remote          List available
   rm <ver>        Remove version
@@ -910,6 +924,8 @@ Examples:
   espvm i 5.5         Install IDF 5.5
   espvm -m i 1.0      Install Matter 1.0
   espvm -m use 1.0    Activate Matter 1.0
+  espvm off           Deactivate IDF
+  espvm -m off        Deactivate Matter
   espvm ls            List IDF versions
   espvm -m ls         List Matter versions
   espvm status        Show what's active
@@ -923,6 +939,7 @@ _espvm_sdk_command() {
     case "$cmd" in
         install)     _espvm_install "$sdk" "$@" ;;
         use)         _espvm_use "$sdk" "$@" ;;
+        off|deactivate) _espvm_off "$sdk" ;;
         list)        _espvm_list "$sdk" ;;
         list-remote) _espvm_list_remote "$sdk" ;;
         remove)      _espvm_remove "$sdk" "$@" ;;
@@ -960,6 +977,7 @@ espvm() {
         idf|matter)       _espvm_sdk_command "$cmd" "$@" ;;
         i|install)        _espvm_sdk_command "$sdk" "install" "$@" ;;
         use)              _espvm_sdk_command "$sdk" "use" "$@" ;;
+        off|deactivate)   _espvm_off "$sdk" ;;
         ls|list)          _espvm_list "$sdk" ;;
         remote|list-remote) _espvm_list_remote "$sdk" ;;
         rm|remove)        _espvm_remove "$sdk" "$@" ;;
@@ -1032,7 +1050,7 @@ _espvm_completions() {
 
     local cmd=""
     [[ $cword -gt $cmd_index ]] && cmd="${words[cmd_index]}"
-    local commands="i install use ls list remote list-remote rm remove update current repair status config help idf matter"
+    local commands="i install use off ls list remote list-remote rm remove update current repair status config help idf matter"
     local sdk_flags="-i -m"
 
     if [[ $cword -eq 1 ]]; then
@@ -1056,7 +1074,7 @@ _espvm_completions() {
             esac ;;
         idf|matter)
             if [[ $prev == "idf" || $prev == "matter" ]]; then
-                COMPREPLY+=($(compgen -W "install use list list-remote remove update current repair help" -- "$cur"))
+                COMPREPLY+=($(compgen -W "install use off list list-remote remove update current repair help" -- "$cur"))
             else
                 local subcmd="${words[cmd_index+1]}"
                 case "$subcmd" in
