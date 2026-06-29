@@ -823,7 +823,14 @@ espvm_config() {
         echo "  ESPVM_USE_SSH: ${ESPVM_USE_SSH:-auto}"
         echo ""
         echo "Bare repositories:"
-        for sdk in "${!_ESPVM_SDKS[@]}"; do
+        local -a sdk_keys
+        if [[ -n "${ZSH_VERSION:-}" ]]; then
+            sdk_keys=("${(k)_ESPVM_SDKS[@]}")
+        else
+            sdk_keys=("${!_ESPVM_SDKS[@]}")
+        fi
+        local sdk
+        for sdk in "${sdk_keys[@]}"; do
             local bare_dir="$(_espvm_get_bare_dir "$sdk")"
             [[ -d "$bare_dir" ]] && echo "  ${_ESPVM_SDKS[$sdk]}: $bare_dir"
         done
