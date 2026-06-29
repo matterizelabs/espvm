@@ -200,7 +200,8 @@ _espvm_verify_python_script() {
     local script_path="$1"
     local script_dir; script_dir="$(cd "$(dirname "$script_path")" && pwd)"
     local script_name; script_name="$(basename "$script_path")"
-    [[ ! -e "$script_dir/.git" ]] && { _espvm_error "Error: $script_dir is not a git repository"; return 1; }
+    git -C "$script_dir" rev-parse --git-dir &>/dev/null || \
+        { _espvm_error "Error: $script_dir is not inside a git repository"; return 1; }
     git -C "$script_dir" diff --quiet -- "$script_name" && \
     git -C "$script_dir" diff --quiet HEAD -- "$script_name"
 }
