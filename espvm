@@ -65,6 +65,27 @@ _espvm_realpath() {
     fi
 }
 
+_espvm_is_system_path() {
+    local p="$1"
+    [[ "$p" == / || "$p" == /usr/* || "$p" == /etc/* || "$p" == /var/* || \
+       "$p" == /proc/* || "$p" == /sys/* || "$p" == /boot/* || "$p" == /dev/* ]]
+}
+
+_espvm_verify_signed_tag() {
+    local repo_dir="$1" version="$2"
+    if git -C "$repo_dir" tag -v "$version" &>/dev/null; then
+        _espvm_green "Tag signature verified for $version"
+        return 0
+    fi
+    if [[ "${ESPVM_STRICT_SIGNED_TAGS:-0}" == "1" ]]; then
+        _espvm_red "Error: Tag $version is not signed or signature could not be verified (ESPVM_STRICT_SIGNED_TAGS=1)"
+        return 1
+    fi
+    _espvm_yellow "Warning: Tag $version is not signed or signature could not be verified"
+    _espvm_confirm "Continue with unsigned tag?" || { _espvm_red "Aborting"; return 1; }
+    return 0
+}
+
 _espvm_safe_rm_rf() {
     local target="$1" wt="$(_espvm_get_worktree_dir)"
     [[ -z "$target" || "$target" == "/" ]] && { _espvm_red "Error: Refusing to remove: $target"; return 1; }
@@ -253,11 +274,9 @@ _espvm_get_worktree_dir() {
             [[ "$custom_path" == /* ]] || custom_path="$(cd "$custom_path" 2>/dev/null && pwd -P)" || {
                 _espvm_red "Error: Invalid path: $custom_path" >&2; return 1
             }
-            [[ "$custom_path" == / || "$custom_path" == /usr/* || "$custom_path" == /etc/* || \
-               "$custom_path" == /var/* || "$custom_path" == /proc/* || "$custom_path" == /sys/* || \
-               "$custom_path" == /boot/* || "$custom_path" == /dev/* ]] && {
+            if _espvm_is_system_path "$custom_path"; then
                 _espvm_red "Error: Cannot set worktree-dir to system path: $custom_path" >&2; return 1
-            }
+            fi
             ESPVM_WORKTREE_DIR="$custom_path" ;;
         *) ESPVM_WORKTREE_DIR="$HOME/.espressif/versions" ;;
     esac
@@ -518,16 +537,7 @@ _espvm_install_idf() {
         git -C "$bare_dir" fetch origin -- "$version" || { _espvm_red "Error: Failed to fetch $version"; return 1; }
     fi
 
-    if git -C "$bare_dir" tag -v "$version" &>/dev/null; then
-        _espvm_green "Tag signature verified for $version"
-    else
-        if [[ "${ESPVM_STRICT_SIGNED_TAGS:-0}" == "1" ]]; then
-            _espvm_red "Error: Tag $version is not signed or signature could not be verified (ESPVM_STRICT_SIGNED_TAGS=1)"
-            return 1
-        fi
-        _espvm_yellow "Warning: Tag $version is not signed or signature could not be verified"
-        _espvm_confirm "Continue with unsigned tag?" || { _espvm_red "Aborting"; return 1; }
-    fi
+    _espvm_verify_signed_tag "$bare_dir" "$version" || return 1
 
     echo "Creating worktree for $version..."
     mkdir -p "$sdk_dir"
@@ -556,16 +566,8 @@ _espvm_install_matter() {
     git clone --depth 1 --branch "$version" -- "$repo_url" "$version_dir" 2>/dev/null || \
         { _espvm_red "Error: Failed to clone $version"; return 1; }
 
-    if git -C "$version_dir" tag -v "$version" &>/dev/null; then
-        _espvm_green "Tag signature verified for $version"
-    else
-        if [[ "${ESPVM_STRICT_SIGNED_TAGS:-0}" == "1" ]]; then
-            _espvm_red "Error: Tag $version is not signed or signature could not be verified (ESPVM_STRICT_SIGNED_TAGS=1)"
-            _espvm_safe_rm_rf "$version_dir"; return 1
-        fi
-        _espvm_yellow "Warning: Tag $version is not signed or signature could not be verified"
-        _espvm_confirm "Continue with unsigned tag?" || { _espvm_safe_rm_rf "$version_dir"; _espvm_red "Aborting"; return 1; }
-    fi
+    _espvm_verify_signed_tag "$version_dir" "$version" || \
+        { _espvm_safe_rm_rf "$version_dir"; return 1; }
 
     echo "Initializing submodules..."
     git -C "$version_dir" submodule update --init --depth 1 || {
@@ -821,9 +823,9 @@ espvm_config() {
                 _espvm_validate_config_value "$value" || return 1
                 value="${value/#\~/$HOME}"
                 [[ "$value" == /* ]] || value="$(cd "$value" 2>/dev/null && pwd -P)" || { _espvm_red "Error: Invalid path: $value"; return 1; }
-                [[ "$value" == / || "$value" == /usr/* || "$value" == /etc/* || "$value" == /var/* || \
-                   "$value" == /proc/* || "$value" == /sys/* || "$value" == /boot/* || "$value" == /dev/* ]] && \
+                if _espvm_is_system_path "$value"; then
                     { _espvm_red "Error: Cannot set worktree-dir to system path: $value"; return 1; }
+                fi
                 ESPVM_WORKTREE_DIR="$value"; _espvm_save_config
                 _espvm_green "worktree-dir set to: $ESPVM_WORKTREE_DIR" ;;
             use-ssh|use_ssh|ESPVM_USE_SSH)
@@ -965,6 +967,47 @@ espvm() {
 
 # ── Completions ──
 
+_espvm_get_installed_versions() {
+    local s="$1"
+    _espvm_load_config 2>/dev/null
+    local sname="${_ESPVM_SDKS[$s]}"
+    local sdir="${ESPVM_WORKTREE_DIR:-$HOME/.espressif/versions}/$sname"
+    if [[ -d "$sdir" ]]; then
+        for d in "$sdir"/*/; do
+            [[ -d "$d" ]] || continue
+            local v; v="$(basename "$d")"
+            [[ "$v" == .* ]] && continue
+            echo "$v"
+        done
+    fi
+}
+
+_espvm_complete_versions() {
+    local sdk="$1" cur="$2"
+    COMPREPLY+=($(compgen -W "$(_espvm_get_installed_versions "$sdk")" -- "$cur"))
+}
+
+_espvm_compgen_path() {
+    local cur="$1" prefix="${2:-}"
+    local expanded="${cur#"$prefix"}"
+    expanded="${expanded/#\~/$HOME}"
+    local d
+    while IFS= read -r d; do
+        [[ -n "$d" ]] && COMPREPLY+=("$prefix$d")
+    done < <(compgen -d -- "$expanded" 2>/dev/null)
+}
+
+_espvm_complete_install_opts() {
+    local cur="$1" prev="$2"
+    if [[ "$cur" == --path=* ]]; then
+        _espvm_compgen_path "$cur" "--path="
+    elif [[ "$prev" == "--path" ]]; then
+        _espvm_compgen_path "$cur"
+    else
+        COMPREPLY+=($(compgen -W "-v --verbose -f --force --path" -- "$cur"))
+    fi
+}
+
 _espvm_completions() {
     COMPREPLY=()
     local cur="${COMP_WORDS[COMP_CWORD]}" prev="${COMP_WORDS[COMP_CWORD-1]}"
@@ -991,41 +1034,28 @@ _espvm_completions() {
         COMPREPLY=($(compgen -W "$commands" -- "$cur")); return
     fi
 
-    _espvm_get_installed_versions() {
-        local s="$1"
-        _espvm_load_config 2>/dev/null
-        local sname="${_ESPVM_SDKS[$s]}" wdir="${ESPVM_WORKTREE_DIR:-$HOME/.espressif/versions}" sdir="$wdir/$sname"
-        if [[ -d "$sdir" ]]; then
-            for d in "$sdir"/*/; do
-                [[ -d "$d" ]] || continue
-                local v; v="$(basename "$d")"
-                [[ "$v" == .* ]] && continue
-                echo "$v"
-            done
-        fi
-    }
-
     case "$cmd" in
         use|rm|remove|update)
-            local versions=$(_espvm_get_installed_versions "$sdk")
-            COMPREPLY=($(compgen -W "$versions" -- "$cur")) ;;
+            _espvm_complete_versions "$sdk" "$cur" ;;
         i|install)
-            COMPREPLY=($(compgen -W "-v --verbose -f --force --path" -- "$cur")) ;;
+            _espvm_complete_install_opts "$cur" "$prev" ;;
         config)
             case "$prev" in
-                config) COMPREPLY=($(compgen -W "show set reset" -- "$cur")) ;;
-                set)    COMPREPLY=($(compgen -W "worktree-dir use-ssh" -- "$cur")) ;;
-                use-ssh) COMPREPLY=($(compgen -W "auto yes no" -- "$cur")) ;;
+                config)  COMPREPLY+=($(compgen -W "show set reset" -- "$cur")) ;;
+                set)     COMPREPLY+=($(compgen -W "worktree-dir use-ssh" -- "$cur")) ;;
+                use-ssh) COMPREPLY+=($(compgen -W "auto yes no" -- "$cur")) ;;
+                worktree-dir|worktree_dir|ESPVM_WORKTREE_DIR) _espvm_compgen_path "$cur" ;;
             esac ;;
         idf|matter)
             if [[ $prev == "idf" || $prev == "matter" ]]; then
-                COMPREPLY=($(compgen -W "install use list list-remote remove update current repair help" -- "$cur"))
+                COMPREPLY+=($(compgen -W "install use list list-remote remove update current repair help" -- "$cur"))
             else
                 local subcmd="${words[cmd_index+1]}"
                 case "$subcmd" in
-                    use|remove|update)
-                        local versions=$(_espvm_get_installed_versions "$cmd")
-                        COMPREPLY=($(compgen -W "$versions" -- "$cur")) ;;
+                    use|rm|remove|update)
+                        _espvm_complete_versions "$cmd" "$cur" ;;
+                    install)
+                        _espvm_complete_install_opts "$cur" "$prev" ;;
                 esac
             fi ;;
     esac
