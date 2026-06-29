@@ -419,7 +419,13 @@ _espvm_repair_worktrees() {
 
 _espvm_path_remove() {
     local remove="$1" new_path="" IFS=':' entry
-    for entry in $PATH; do
+    local -a entries
+    if [[ -n "${ZSH_VERSION:-}" ]]; then
+        entries=("${(s/:/)PATH}")
+    else
+        read -ra entries <<< "$PATH"
+    fi
+    for entry in "${entries[@]}"; do
         [[ "$entry" != "$remove" && "$entry" != "$remove"/* ]] && new_path="${new_path:+$new_path:}$entry"
     done
     echo "$new_path"
