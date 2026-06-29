@@ -1,6 +1,0 @@
-#!/bin/bash
-# Regenerate espvm.sha256 when espvm is staged for commit
-if git diff --cached --name-only | grep -q '^espvm$'; then
-    sha256sum espvm > espvm.sha256
-    git add espvm.sha256
-fi

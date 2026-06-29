@@ -2,11 +2,13 @@
 set -euo pipefail
 
 ESPVM_INSTALL_DIR="${ESPVM_INSTALL_DIR:-$HOME/.local/bin}"
-ESPVM_SCRIPT_URL="${ESPVM_SCRIPT_URL:-https://raw.githubusercontent.com/matterizelabs/espvm/refs/heads/main/espvm}"
-ESPVM_SHA256_URL="${ESPVM_SHA256_URL:-${ESPVM_SCRIPT_URL}.sha256}"
+ESPVM_REPO="${ESPVM_REPO:-matterizelabs/espvm}"
+ESPVM_SCRIPT_URL="${ESPVM_SCRIPT_URL:-}"
+ESPVM_SHA256_URL="${ESPVM_SHA256_URL:-}"
 ESPVM_SHA256_EXPECTED="${ESPVM_SHA256_EXPECTED:-}"
 ESPVM_GPG_KEY="${ESPVM_GPG_KEY:-}"
 ESPVM_COMMIT_REF="${ESPVM_COMMIT_REF:-}"
+ESPVM_RELEASE_TAG="${ESPVM_RELEASE_TAG:-}"
 
 red()   { echo -e "\033[0;31m$1\033[0m"; }
 green() { echo -e "\033[0;32m$1\033[0m"; }
@@ -24,22 +26,38 @@ _espvm_sha256() {
 
 # ── Validate ──
 
-[[ "$ESPVM_SCRIPT_URL" == https://* || "$ESPVM_SCRIPT_URL" == file://* ]] || die "Error: ESPVM_SCRIPT_URL must use HTTPS or file://: $ESPVM_SCRIPT_URL"
-[[ "$ESPVM_SHA256_URL" == https://* || "$ESPVM_SHA256_URL" == file://* ]] || die "Error: ESPVM_SHA256_URL must use HTTPS or file://: $ESPVM_SHA256_URL"
 command -v git &>/dev/null || die "Error: git is required"
 command -v python3 &>/dev/null || die "Error: python3 is required"
 
-# ── Pin to commit if requested ──
+# ── Resolve URLs ──
+# Default: latest GitHub release. espvm fetched from raw <tag>/espvm,
+# espvm.sha256 fetched from release asset. Both immutable, always in sync.
 
-if [[ -n "$ESPVM_COMMIT_REF" ]]; then
-    # Validate commit ref contains only safe characters (sha1 hashes, branch names)
-    if [[ ! "$ESPVM_COMMIT_REF" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
-        die "Error: ESPVM_COMMIT_REF contains invalid characters: $ESPVM_COMMIT_REF"
+if [[ -z "$ESPVM_SCRIPT_URL" ]]; then
+    if [[ -n "$ESPVM_COMMIT_REF" ]]; then
+        [[ "$ESPVM_COMMIT_REF" =~ ^[a-zA-Z0-9._/-]+$ ]] || \
+            die "Error: ESPVM_COMMIT_REF contains invalid characters: $ESPVM_COMMIT_REF"
+        ref="$ESPVM_COMMIT_REF"
+    else
+        if [[ -n "$ESPVM_RELEASE_TAG" ]]; then
+            ref="$ESPVM_RELEASE_TAG"
+        else
+            ref=$(curl -fsSL "https://api.github.com/repos/$ESPVM_REPO/releases/latest" \
+                | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
+            [[ -n "$ref" ]] || die "Error: Could not determine latest release tag for $ESPVM_REPO"
+        fi
+        echo "Using latest release: $ref"
     fi
-    ESPVM_SCRIPT_URL=$(echo "$ESPVM_SCRIPT_URL" | sed -E "s|/refs/(heads|tags)/[^/]+|/$ESPVM_COMMIT_REF|")
-    ESPVM_SHA256_URL="${ESPVM_SCRIPT_URL}.sha256"
-    echo "Pinned to commit: $ESPVM_COMMIT_REF"
+    ESPVM_SCRIPT_URL="https://github.com/$ESPVM_REPO/releases/download/$ref/espvm"
+    [[ -z "$ESPVM_SHA256_URL" ]] && \
+        ESPVM_SHA256_URL="https://github.com/$ESPVM_REPO/releases/download/$ref/espvm.sha256"
 fi
+[[ -z "$ESPVM_SHA256_URL" ]] && ESPVM_SHA256_URL="${ESPVM_SCRIPT_URL}.sha256"
+
+[[ "$ESPVM_SCRIPT_URL" == https://* || "$ESPVM_SCRIPT_URL" == file://* ]] || \
+    die "Error: ESPVM_SCRIPT_URL must use HTTPS or file://: $ESPVM_SCRIPT_URL"
+[[ "$ESPVM_SHA256_URL" == https://* || "$ESPVM_SHA256_URL" == file://* ]] || \
+    die "Error: ESPVM_SHA256_URL must use HTTPS or file://: $ESPVM_SHA256_URL"
 
 # ── Download ──
 
