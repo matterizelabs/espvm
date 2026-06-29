@@ -11,12 +11,30 @@ Manage multiple ESP-IDF and ESP-Matter versions.
 curl -fsSL https://raw.githubusercontent.com/matterizelabs/espvm/main/install.sh | bash
 ```
 
+Or pinned to a release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/matterizelabs/espvm/main/install.sh | ESPVM_RELEASE_TAG=v0.0.4 bash
+```
+
 Or manually:
 
 ```bash
 curl -o ~/.local/bin/espvm https://raw.githubusercontent.com/matterizelabs/espvm/main/espvm
 chmod +x ~/.local/bin/espvm
 echo 'source ~/.local/bin/espvm' >> ~/.bashrc
+```
+
+## Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/matterizelabs/espvm/main/uninstall.sh | bash
+```
+
+Remove espvm tool only (keeps installed SDKs and config). To wipe everything:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/matterizelabs/espvm/main/uninstall.sh | bash -s -- --purge
 ```
 
 ## Quick Start
@@ -61,11 +79,4 @@ Config stored at `~/.espressif/.espvm/config`
 
 - git
 - python3
-
-## Development
-
-After cloning, enable the pre-commit hook to auto-regenerate the SHA-256 digest:
-
-```bash
-git config core.hooksPath hooks
-```
+- curl (for install/uninstall scripts)
