@@ -260,7 +260,7 @@ _espvm_uses_worktree() { [[ "${_ESPVM_SDK_USE_WORKTREE[$1]}" == "1" ]]; }
 _espvm_normalize_version() { if [[ "$1" =~ ^[0-9] ]]; then echo "v$1"; else echo "$1"; fi; }
 _espvm_resolve_version() { _espvm_validate_version "$1" || return 1; _espvm_normalize_version "$1"; }
 _espvm_encode_version() { echo "${1//\//-}"; }
-_espvm_decode_version() { if [[ "$1" == release-* ]]; then echo "${1/release-/release\/}"; else echo "$1"; fi; }
+_espvm_decode_version() { if [[ "$1" == release-* ]]; then echo "${1//release-/release/}"; else echo "$1"; fi; }
 _espvm_get_bare_dir() { echo "$ESPVM_CONFIG_DIR/${_ESPVM_SDKS[$1]}.bare"; }
 _espvm_get_sdk_dir() { echo "$(_espvm_get_worktree_dir)/${_ESPVM_SDKS[$1]}"; }
 _espvm_get_current_file() { echo "$(_espvm_get_sdk_dir "$1")/.current"; }
