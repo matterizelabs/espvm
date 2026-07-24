@@ -64,13 +64,16 @@ fi
 
 mkdir -p "$ESPVM_INSTALL_DIR"
 info "Downloading espvm..."
+dl_tmp=$(mktemp "${TMPDIR:-/tmp}/espvm-dl.XXXXXX") || die "Error: Failed to create temp file"
 if command -v curl &>/dev/null; then
-    curl -fsSL "$ESPVM_SCRIPT_URL" -o "$ESPVM_INSTALL_DIR/espvm"
+    curl -fsSL "$ESPVM_SCRIPT_URL" -o "$dl_tmp" || { rm -f "$dl_tmp"; die "Error: Download failed"; }
 elif command -v wget &>/dev/null; then
-    wget -qO "$ESPVM_INSTALL_DIR/espvm" "$ESPVM_SCRIPT_URL"
+    wget -qO "$dl_tmp" "$ESPVM_SCRIPT_URL" || { rm -f "$dl_tmp"; die "Error: Download failed"; }
 else
+    rm -f "$dl_tmp"
     die "Error: curl or wget is required"
 fi
+mv "$dl_tmp" "$ESPVM_INSTALL_DIR/espvm"
 
 # ── Verify integrity ──
 
@@ -145,10 +148,21 @@ green "espvm installed to $ESPVM_INSTALL_DIR/espvm"
 
 # ── Configure shell ──
 
+shell_name="$(basename "${SHELL:-/bin/bash}")"
+if [[ "$shell_name" == "fish" ]]; then
+    yellow "fish shell is not supported by espvm (bash >= 4 or zsh required)."
+    yellow "espvm was installed to $ESPVM_INSTALL_DIR/espvm but your shell rc was not modified."
+    exit 0
+fi
+
 SHELL_RC="$HOME/.bashrc"
-case "$(basename "${SHELL:-/bin/bash}")" in
+case "$shell_name" in
     zsh)  SHELL_RC="$HOME/.zshrc" ;;
-    fish) SHELL_RC="$HOME/.config/fish/config.fish" ;;
+    bash)
+        # macOS bash login shells read .bash_profile, not .bashrc
+        if [[ "$(uname -s 2>/dev/null)" == "Darwin" && -f "$HOME/.bash_profile" ]]; then
+            SHELL_RC="$HOME/.bash_profile"
+        fi ;;
 esac
 
 safe_install_dir=$(printf '%q' "$ESPVM_INSTALL_DIR")
