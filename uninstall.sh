@@ -48,10 +48,12 @@ case "$(basename "${SHELL:-/bin/bash}")" in
     fish) SHELL_RC="$HOME/.config/fish/config.fish" ;;
 esac
 
-if [[ -f "$SHELL_RC" ]] && grep -qF "espvm" "$SHELL_RC"; then
+if [[ -f "$SHELL_RC" ]] && grep -qE '^[[:space:]]*source[[:space:]]+[^#]*/espvm[[:space:]]*$' "$SHELL_RC"; then
     rc_tmpfile=$(mktemp "${TMPDIR:-/tmp}/espvm-uninstall.XXXXXX") || die "Error: Failed to create temp file"
     chmod 600 "$rc_tmpfile"
-    grep -vF "espvm" "$SHELL_RC" > "$rc_tmpfile" || true
+    # Remove only the source line and the marker comment install.sh added
+    grep -vE '^[[:space:]]*source[[:space:]]+[^#]*/espvm[[:space:]]*$' "$SHELL_RC" \
+        | grep -vF '# espvm - ESP SDK Version Manager' > "$rc_tmpfile" || true
     if mv "$rc_tmpfile" "$SHELL_RC"; then
         green "Removed espvm source line from $SHELL_RC"
     else
@@ -70,7 +72,11 @@ if [[ $PURGE -eq 1 ]]; then
         ESPVM_WORKTREE_DIR=$(sed -n 's/^ESPVM_WORKTREE_DIR="\(.*\)"$/\1/p' "$ESPVM_CONFIG_DIR/config" 2>/dev/null || true)
     fi
     if [[ -n "$ESPVM_WORKTREE_DIR" && -d "$ESPVM_WORKTREE_DIR" ]]; then
-        rm -rf "$ESPVM_WORKTREE_DIR"
+        case "$ESPVM_WORKTREE_DIR" in
+            /|/usr|/usr/*|/etc|/etc/*|/var|/var/*|/bin|/bin/*|/sbin|/sbin/*|/opt|/boot|/boot/*|"$HOME")
+                die "Error: Refusing to purge unsafe worktree dir: $ESPVM_WORKTREE_DIR" ;;
+        esac
+        rm -rf -- "$ESPVM_WORKTREE_DIR"
         green "Removed worktree dir: $ESPVM_WORKTREE_DIR"
     fi
     if [[ -d "$ESPVM_CONFIG_DIR" ]]; then
