@@ -75,8 +75,38 @@ espvm config reset                    # Reset to defaults
 
 Config stored at `~/.espressif/.espvm/config`
 
+## Platform support
+
+| Platform | Status |
+|----------|--------|
+| Linux | Supported |
+| macOS | Supported (zsh, or bash >= 4 via `brew install bash`) |
+| BSD | Supported with bash >= 4 installed |
+| Windows | **WSL2 only** (native Windows unsupported — ESP-IDF uses `install.bat`/`export.ps1` there) |
+
+Windows notes: inside WSL2 everything works as on Linux. Clone repositories
+from inside the WSL filesystem, not from `/mnt/c/...` (per Espressif docs).
+Flash access requires [usbipd-win](https://github.com/dorssel/usbipd-win).
+
+Fish shell is not supported (espvm is bash/zsh only; ESP-IDF ships its own
+`install.fish`/`export.fish` if you need fish).
+
 ## Requirements
 
+- bash >= 4 or zsh
 - git
 - python3
 - curl (for install/uninstall scripts)
+- ESP-IDF prerequisites per OS (cmake, ninja, dfu-util; see
+  [Espressif docs](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/linux-macos-setup.html))
+
+## Non-interactive use
+
+Prompts auto-decline when stdin is not a TTY. For CI/scripts:
+
+```bash
+ESPVM_YES=1 espvm i 5.4.1    # or: espvm i 5.4.1 -y
+```
+
+`ESPVM_STRICT_SIGNED_TAGS=1` makes tag signature verification mandatory
+(off by default; Espressif does not GPG-sign release tags).
