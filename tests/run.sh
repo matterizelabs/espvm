@@ -14,14 +14,18 @@ export HOME="$(mktemp -d)"
 source "$ROOT/espvm" || { echo "cannot source espvm"; exit 1; }
 
 # -- safe_rm_rf guards (destructive ops) --
-assert "safe_rm_rf refuses /"            '! _espvm_safe_rm_rf /'
-assert "safe_rm_rf refuses empty"        '! _espvm_safe_rm_rf ""'
+# NOTE: a "/" target is refused by rm's own --preserve-root and by the
+# safe-location check regardless of our guard, so it cannot isolate our code.
+# The meaningful guard test is "outside-safe": that path IS deletable by rm,
+# so refusal proves our guard fired before reaching rm, and the dir survives.
 WT="$HOME/.espressif/versions"
 mkdir -p "$WT/esp-idf/vX"; echo x > "$WT/esp-idf/vX/f"
 assert "safe_rm_rf removes inside worktree" \
       '_espvm_safe_rm_rf "$WT/esp-idf/vX" && [[ ! -e "$WT/esp-idf/vX" ]]'
 EXT="$HOME/outside"; mkdir -p "$EXT"
-assert "safe_rm_rf refuses outside-safe" '! _espvm_safe_rm_rf "$EXT"'
+assert "safe_rm_rf refuses outside-safe and leaves it" \
+      '! _espvm_safe_rm_rf "$EXT" && [[ -d "$EXT" ]]'
+assert "safe_rm_rf refuses empty" '! _espvm_safe_rm_rf ""'
 
 # -- concurrency lock --
 assert "lock acquires"       '_espvm_lock "$_ESPVM_LOCK_DIR"'
@@ -37,9 +41,15 @@ assert "config refuses worktree change with installs" '! espvm config set worktr
 assert "config allows --force" 'espvm config set worktree-dir /tmp/wt2 --force'
 
 # -- hash verification refuses when unhashable (no silent pass) --
+# The refusal must happen before any baseline is recorded: if the guard were
+# dropped, verify would write an empty baseline hash and return 0.
 _espvm_sha256() { echo ""; }
 F="$(mktemp)"; echo "#!/bin/sh" > "$F"
-assert "verify_script_hash refuses when unhashable" '! _espvm_verify_script_hash "$F" unit'
+assert "verify_script_hash refuses when unhashable (no baseline written)" '
+  rm -rf "$ESPVM_CONFIG_DIR/hashes"
+  ! _espvm_verify_script_hash "$F" unit
+  [[ -z "$(ls -A "$ESPVM_CONFIG_DIR/hashes" 2>/dev/null)" ]]
+'
 unset -f _espvm_sha256
 
 # -- read-only commands must not prompt or write config (smell #2) --
