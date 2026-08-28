@@ -510,15 +510,8 @@ _espvm_repair_worktrees() {
     local sdk="$1"
     local bare_dir="$(_espvm_get_bare_dir "$sdk")" sdk_dir="$(_espvm_get_sdk_dir "$sdk")"
     [[ ! -d "$bare_dir" || ! -d "$sdk_dir" ]] && return 0
-    for dir in "$sdk_dir"/*/; do
-        [[ ! -d "$dir" ]] && continue
-        local wt_name; wt_name="$(basename "$dir")"
-        local wt_git_dir="$bare_dir/worktrees/$wt_name"
-        [[ ! -d "$wt_git_dir" ]] && { mkdir -p "$wt_git_dir"; echo "$dir" > "$wt_git_dir/gitdir"; }
-        local head_ref; head_ref="$(_espvm_git -C "$dir" rev-parse HEAD 2>/dev/null)"
-        [[ -n "$head_ref" ]] && echo "$head_ref" > "$wt_git_dir/HEAD"
-        [[ -f "$dir.git" ]] && echo "gitdir: $wt_git_dir" > "$dir.git"
-    done
+    # git worktree repair rewrites the worktree <-> bare links itself;
+    # hand-rolling gitdir/HEAD pointers only risks desyncing with git's format.
     _espvm_git -C "$bare_dir" worktree repair "$sdk_dir" 2>/dev/null
 }
 
