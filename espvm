@@ -1,7 +1,7 @@
 #!/bin/bash
 # espvm - ESP SDK Version Manager
 
-# ── Shell check ──
+# -- Shell check --
 
 if [[ -n "${BASH_VERSION:-}" ]]; then
     if (( BASH_VERSINFO[0] < 4 )); then
@@ -13,7 +13,7 @@ elif [[ -z "${ZSH_VERSION:-}" ]]; then
     return 1 2>/dev/null || exit 1
 fi
 
-# ── Logging ──
+# -- Logging --
 
 _espvm_info()   { printf '\033[0;34m%s\033[0m\n' "$*"; }
 _espvm_info_n() { printf '\033[0;34m%s\033[0m' "$*"; }
@@ -21,7 +21,7 @@ _espvm_ok()     { printf '\033[0;32m%s\033[0m\n' "$*"; }
 _espvm_warn()   { printf '\033[0;33m%s\033[0m\n' "$*" >&2; }
 _espvm_error()  { printf '\033[0;31m%s\033[0m\n' "$*" >&2; }
 
-# ── Config ──
+# -- Config --
 
 _espvm_validate_config_dir() {
     local dir="${ESPVM_CONFIG_DIR:-$HOME/.espressif/.espvm}"
@@ -45,7 +45,7 @@ _ESPVM_VERBOSE=0
 _ESPVM_ENV_WORKTREE_DIR="${ESPVM_WORKTREE_DIR:-}"
 _ESPVM_ENV_USE_SSH="${ESPVM_USE_SSH:-}"
 
-# ── SDK Definitions ──
+# -- SDK Definitions --
 
 declare -A _ESPVM_SDKS=([idf]="esp-idf" [matter]="esp-matter")
 declare -A _ESPVM_SDK_REPOS=([idf]="espressif/esp-idf" [matter]="espressif/esp-matter")
@@ -54,7 +54,14 @@ declare -A _ESPVM_SDK_INSTALL_ARGS=([idf]="" [matter]="--no-host-tool")
 declare -A _ESPVM_SDK_USE_WORKTREE=([idf]=1 [matter]=0)
 declare -A _ESPVM_SDK_REQUIRES=([idf]="" [matter]="idf")
 
-# ── Output & Prompts ──
+# -- Command set (single source of truth) --
+# Both the dispatch (espvm) and tab-completion (_espvm_completions) must agree
+# on the command list. Keep it here so adding a command can't silently break
+# completion, and per-SDK subcommands stay in sync with _espvm_sdk_command.
+declare -a _ESPVM_COMMANDS=(i install use off deactivate ls list remote list-remote rm remove update current repair status config help idf matter)
+declare -a _ESPVM_SDK_COMMANDS=(install use off list list-remote remove update current repair help)
+
+# -- Output & Prompts --
 
 _espvm_confirm() {
     local answer
@@ -68,7 +75,7 @@ _espvm_confirm() {
     [[ "$answer" =~ ^[Yy]$ ]]
 }
 
-# ── Security & Validation ──
+# -- Security & Validation --
 
 _espvm_realpath() {
     local p="$1"
@@ -196,7 +203,7 @@ _espvm_verify_script_hash() {
 _espvm_verify_version_origin() {
     local version_dir="$1"
     if [[ ! -e "$version_dir/.git" ]]; then
-        _espvm_error "Error: $version_dir is not a git repository — refusing to source"
+        _espvm_error "Error: $version_dir is not a git repository - refusing to source"
         return 1
     fi
     if ! _espvm_git -C "$version_dir" diff --quiet HEAD; then
@@ -236,7 +243,7 @@ _espvm_check_prereqs() {
     command -v python3 &>/dev/null || { _espvm_error "Error: python3 is not installed"; return 1; }
 }
 
-# ── Concurrency lock ──
+# -- Concurrency lock --
 # espvm mutates shared state (bare repos, worktree links, the installs
 # manifest). Two concurrent invocations (e.g. two shells `espvm install`)
 # would race and corrupt the bare repo / worktree. Serialize all invocations
@@ -266,7 +273,7 @@ _espvm_unlock() {
     return 0
 }
 
-# ── Config Management ──
+# -- Config Management --
 
 _espvm_load_config() {
     ESPVM_WORKTREE_DIR=""
@@ -303,7 +310,7 @@ _espvm_save_config() {
         "$ESPVM_WORKTREE_DIR" "$ESPVM_USE_SSH" > "$ESPVM_CONFIG_FILE"
 }
 
-# ── Path & Version Helpers ──
+# -- Path & Version Helpers --
 
 _espvm_get_active_path() {
     local sdk="$1"
@@ -330,7 +337,7 @@ _espvm_get_sdk_dir() {
 }
 _espvm_get_current_file() { echo "$(_espvm_get_sdk_dir "$1")/.current"; }
 
-# ── Install manifest ──
+# -- Install manifest --
 # Tracks every install (default and custom --path): sdk, encoded, version, dir
 
 _espvm_register_install() {
@@ -369,7 +376,7 @@ _espvm_install_dir() {
 
 _espvm_get_worktree_dir() {
     # Config is loaded once at the espvm() entry, so this must not prompt or
-    # write — read-only commands (list/current) resolve through here. Fail hard
+    # write - read-only commands (list/current) resolve through here. Fail hard
     # on a non-absolute dir rather than leaking an empty/relative path into
     # mkdir/rm/git worktree add.
     local dir="${ESPVM_WORKTREE_DIR:-$HOME/.espressif/versions}"
@@ -377,7 +384,7 @@ _espvm_get_worktree_dir() {
     echo "$dir"
 }
 
-# ── SSH & Repository ──
+# -- SSH & Repository --
 
 _ESPVM_SSH_CHECK_RESULT="" _ESPVM_SSH_CHECK_TIME=0 _ESPVM_SSH_CACHE_TTL=300
 
@@ -413,7 +420,7 @@ _espvm_warn_insecure_url() {
         _espvm_warn "Warning: Repository URL doesn't use HTTPS or SSH: $url"
 }
 
-# ── Quiet Execution ──
+# -- Quiet Execution --
 
 _espvm_source_quiet() {
     local script="$1" sdk="$2"
@@ -450,7 +457,7 @@ _espvm_run_python_script() {
     python3 "$script_path" "$@"
 }
 
-# ── Git Operations ──
+# -- Git Operations --
 
 _espvm_init_bare() {
     local sdk="$1"
@@ -486,7 +493,7 @@ _espvm_repair_worktrees() {
     _espvm_git -C "$bare_dir" worktree repair "$sdk_dir" 2>/dev/null
 }
 
-# ── Environment Management ──
+# -- Environment Management --
 
 _espvm_path_remove() {
     local remove="$1" new_path="" IFS=':' entry
@@ -544,7 +551,7 @@ _espvm_off() {
     _espvm_ok "$sdk_name deactivated"
 }
 
-# ── Install ──
+# -- Install --
 
 _espvm_check_tools() {
     [[ ! -f "$1/tools/idf_tools.py" ]] && return 1
@@ -718,7 +725,7 @@ _espvm_install_matter() {
     fi
 }
 
-# ── Use / Activate ──
+# -- Use / Activate --
 
 _espvm_fix_and_retry() {
     local version_dir="$1" sdk="$2" just_installed="$3"
@@ -798,7 +805,7 @@ _espvm_verify_activation() {
     return 0
 }
 
-# ── Remove ──
+# -- Remove --
 
 _espvm_remove() {
     local sdk="$1" version="$2"
@@ -830,7 +837,7 @@ _espvm_remove() {
     _espvm_ok "$sdk_name $version removed"
 }
 
-# ── Update ──
+# -- Update --
 
 _espvm_update() {
     local sdk="$1" version="$2"
@@ -883,7 +890,7 @@ _espvm_update() {
     _espvm_ok "$sdk_name $version updated"
 }
 
-# ── List ──
+# -- List --
 
 _espvm_list() {
     local sdk="$1"
@@ -967,7 +974,7 @@ _espvm_status() {
     [[ -n "$ESP_MATTER_PATH" ]] && _espvm_ok "  $(basename "$ESP_MATTER_PATH") (active)" || echo "  (not active)"
 }
 
-# ── Config ──
+# -- Config --
 
 _espvm_installs_exist() {
     local installs="$ESPVM_CONFIG_DIR/installs"
@@ -1041,7 +1048,7 @@ espvm_config() {
     return 1
 }
 
-# ── Help ──
+# -- Help --
 
 _espvm_sdk_help() {
     local sdk="$1"
@@ -1116,7 +1123,7 @@ Shells: bash >= 4 or zsh. Windows: WSL2 only.
 EOF
 }
 
-# ── Command Dispatch ──
+# -- Command Dispatch --
 
 _espvm_sdk_command() {
     local sdk="$1" cmd="$2"; shift 2
@@ -1141,7 +1148,7 @@ _espvm_sdk_command() {
     esac
 }
 
-# ── Entry Point ──
+# -- Entry Point --
 
 espvm() {
     local sdk="idf"
@@ -1191,7 +1198,7 @@ _espvm_dispatch() {
     esac
 }
 
-# ── Completions ──
+# -- Completions --
 
 _espvm_get_installed_versions() {
     local s="$1"
@@ -1250,7 +1257,7 @@ _espvm_completions() {
 
     local cmd=""
     [[ $cword -gt $cmd_index ]] && cmd="${words[cmd_index]}"
-    local commands="i install use off ls list remote list-remote rm remove update current repair status config help idf matter"
+    local commands="${_ESPVM_COMMANDS[*]}"
     local sdk_flags="-i -m"
 
     if [[ $cword -eq 1 ]]; then
@@ -1274,7 +1281,7 @@ _espvm_completions() {
             esac ;;
         idf|matter)
             if [[ $prev == "idf" || $prev == "matter" ]]; then
-                COMPREPLY+=($(compgen -W "install use off list list-remote remove update current repair help" -- "$cur"))
+                COMPREPLY+=($(compgen -W "${_ESPVM_SDK_COMMANDS[*]}" -- "$cur"))
             else
                 local subcmd="${words[cmd_index+1]}"
                 case "$subcmd" in
