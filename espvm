@@ -1157,7 +1157,9 @@ espvm() {
         -m) sdk="matter"; shift ;;
     esac
 
-    local cmd="$1"; shift 2>/dev/null || true
+    local cmd="${1:-}"
+    # Drop the command token; guard the no-args (help) case.
+    [[ $# -gt 0 ]] && shift
 
     # Load config once per invocation. Read-only commands (list/current) must
     # not prompt or write it; helpers read the resulting vars, not disk.
