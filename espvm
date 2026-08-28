@@ -38,6 +38,7 @@ _espvm_validate_config_dir() {
 
 ESPVM_CONFIG_DIR="$(_espvm_validate_config_dir)" || ESPVM_CONFIG_DIR="$HOME/.espressif/.espvm"
 ESPVM_CONFIG_FILE="$ESPVM_CONFIG_DIR/config"
+_ESPVM_LOCK_DIR="$ESPVM_CONFIG_DIR/.lock"
 _ESPVM_VERBOSE=0
 
 # Env vars set before sourcing take precedence over the config file
@@ -250,6 +251,36 @@ _espvm_verify_python_script() {
 _espvm_check_prereqs() {
     command -v git &>/dev/null || { _espvm_error "Error: git is not installed"; return 1; }
     command -v python3 &>/dev/null || { _espvm_error "Error: python3 is not installed"; return 1; }
+}
+
+# ── Concurrency lock ──
+# espvm mutates shared state (bare repos, worktree links, the installs
+# manifest). Two concurrent invocations (e.g. two shells `espvm install`)
+# would race and corrupt the bare repo / worktree. Serialize all invocations
+# with an atomic mkdir-based advisory lock keyed by pid.
+
+_espvm_lock() {
+    local lock="$1" pidfile="$1/pid" tries=0 max=300
+    mkdir -p "$(dirname "$lock")" 2>/dev/null
+    while ! mkdir "$lock" 2>/dev/null; do
+        if [[ -f "$pidfile" ]]; then
+            local oldpid; oldpid="$(cat "$pidfile" 2>/dev/null)"
+            if [[ -n "$oldpid" ]] && kill -0 "$oldpid" 2>/dev/null; then
+                ((tries++ >= max)) && { _espvm_error "Error: espvm busy (held by pid $oldpid)"; return 1; }
+                sleep 0.2; continue
+            fi
+        fi
+        # Stale lock (holder died): reclaim it.
+        rm -rf "$lock" 2>/dev/null
+    done
+    printf '%s' "$$" > "$pidfile"
+}
+
+_espvm_unlock() {
+    local lock="$_ESPVM_LOCK_DIR" pidfile
+    pidfile="$lock/pid"
+    [[ -f "$pidfile" ]] && [[ "$(cat "$pidfile" 2>/dev/null)" == "$$" ]] && rm -rf "$lock" 2>/dev/null
+    return 0
 }
 
 # ── Config Management ──
@@ -746,11 +777,9 @@ _espvm_use() {
 
     local just_installed=0
     if [[ ! -d "$version_dir" ]]; then
-        _espvm_warn "$sdk_name $version is not installed"
-        _espvm_confirm "Install it now?" || return 1
-        _espvm_install "$sdk" "$version" || return 1
-        version_dir="$(_espvm_install_dir "$sdk" "$encoded_version")"
-        just_installed=1
+        _espvm_error "Error: $sdk_name $version is not installed"
+        _espvm_info "Run 'espvm $sdk install $version' to install it first"
+        return 1
     fi
 
     _espvm_check_sdk_deps "$sdk" || return 1
@@ -1131,6 +1160,11 @@ espvm() {
     esac
 
     local cmd="$1"; shift 2>/dev/null || true
+
+    # Serialize all espvm invocations: the shared bare repositories, worktree
+    # links, and the installs manifest are not safe for concurrent mutation.
+    _espvm_lock "$_ESPVM_LOCK_DIR" || return 1
+    trap '_espvm_unlock' RETURN
 
     # Bare version args (v5.4.1, 5.4.1, release/v5.0) route to 'use'
     if [[ "$cmd" =~ ^v?[0-9] ]] || [[ "$cmd" =~ ^release[/-] ]]; then

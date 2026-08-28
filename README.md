@@ -41,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/matterizelabs/espvm/main/uninstall.
 
 ```bash
 espvm i 5.4.1           # Install IDF
-espvm 5.4.1             # Activate (or install if needed)
+espvm 5.4.1             # Activate (install first: espvm i 5.4.1)
 
 espvm -m i 1.4          # Install Matter (requires IDF active)
 espvm -m 1.4             # Activate Matter
