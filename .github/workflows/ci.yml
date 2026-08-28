@@ -18,7 +18,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         shell: [bash, zsh]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # ubuntu-latest ships bash 5.x but not zsh; install it for the zsh job.
       - name: Install zsh (ubuntu)
