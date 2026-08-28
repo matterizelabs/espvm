@@ -20,5 +20,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ubuntu-latest ships bash 5.x but not zsh; install it for the zsh job.
+      - name: Install zsh (ubuntu)
+        if: matrix.os == 'ubuntu-latest' && matrix.shell == 'zsh'
+        run: sudo apt-get update && sudo apt-get install -y zsh
+
+      # macOS system bash is 3.2, which cannot parse `declare -A`. The script
+      # requires bash 4+, so install a modern bash and put it on PATH.
+      - name: Install modern bash (macos)
+        if: matrix.os == 'macos-latest' && matrix.shell == 'bash'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install bash
+
+      - name: Put brew bash on PATH (macos)
+        if: matrix.os == 'macos-latest' && matrix.shell == 'bash'
+        run: echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+
       - name: Run smoke tests
         run: ${{ matrix.shell }} tests/run.sh
