@@ -179,14 +179,17 @@ _espvm_verify_script_hash() {
     local script_dir; script_dir="$(cd "$(dirname "$script")" && pwd)"
     # Store hashes in config dir (not alongside scripts) so an attacker who
     # controls the version directory cannot also control the expected hash.
-    local safe_name="${script_dir//\//_}"
+    local real_dir; real_dir="$(_espvm_realpath "$script_dir")"
+    local path_key; path_key="$(_espvm_sha256 <(printf '%s' "$real_dir"))"
+    [[ -z "$path_key" ]] && { _espvm_error "Error: cannot derive hash key for $script_dir"; return 1; }
     local hash_dir="$ESPVM_CONFIG_DIR/hashes"
     mkdir -p "$hash_dir"
-    local hash_file="$hash_dir/.espvm-${safe_name}-${label}.sha256"
+    local hash_file="$hash_dir/.espvm-${path_key}-${label}.sha256"
     local current_hash; current_hash="$(_espvm_sha256 "$script")"
 
     if [[ -z "$current_hash" ]]; then
-        _espvm_warn "Warning: Cannot compute SHA-256 for $script"; return 0
+        _espvm_error "Error: cannot compute SHA-256 for $label ($script); refusing to source unverifiable script"
+        return 1
     fi
     if [[ -f "$hash_file" ]]; then
         local recorded_hash; recorded_hash="$(cat "$hash_file")"
@@ -198,8 +201,9 @@ _espvm_verify_script_hash() {
             echo "$current_hash" > "$hash_file"
         fi
     else
-        _espvm_warn "First run: $label has no recorded hash ($current_hash)"
-        _espvm_confirm "Trust this hash?" || return 1
+        # Baseline capture only. No trust prompt: a TOFU prompt adds friction
+        # without security (a malicious first contact is accepted either way).
+        _espvm_info "Recording baseline hash for $label"
         echo "$current_hash" > "$hash_file"
     fi
     return 0
