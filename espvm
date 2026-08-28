@@ -56,23 +56,6 @@ declare -A _ESPVM_SDK_REQUIRES=([idf]="" [matter]="idf")
 
 # ── Output & Prompts ──
 
-_espvm_prompt() {
-    local prompt="$1" default="${2:-}" reply=""
-    if [[ ! -t 0 ]]; then
-        [[ -n "$default" ]] && { echo "$default"; return 0; }
-        _espvm_error "Error: interactive prompt in non-interactive shell: $prompt"
-        return 1
-    fi
-    if [[ -n "$default" ]]; then
-        echo -n "$prompt [$default]: " >&2
-    else
-        echo -n "$prompt" >&2
-    fi
-    IFS= read -r reply || true
-    [[ -z "$reply" && -n "$default" ]] && reply="$default"
-    echo "$reply"
-}
-
 _espvm_confirm() {
     local answer
     [[ "${ESPVM_YES:-0}" == "1" ]] && return 0
@@ -341,7 +324,10 @@ _espvm_resolve_version() { _espvm_validate_version "$1" || return 1; _espvm_norm
 _espvm_encode_version() { echo "${1//\//-}"; }
 _espvm_decode_version() { if [[ "$1" == release-* ]]; then echo "${1//release-/release/}"; else echo "$1"; fi; }
 _espvm_get_bare_dir() { echo "$ESPVM_CONFIG_DIR/${_ESPVM_SDKS[$1]}.bare"; }
-_espvm_get_sdk_dir() { echo "$(_espvm_get_worktree_dir)/${_ESPVM_SDKS[$1]}"; }
+_espvm_get_sdk_dir() {
+    local wt; wt="$(_espvm_get_worktree_dir)" || return 1
+    echo "$wt/${_ESPVM_SDKS[$1]}"
+}
 _espvm_get_current_file() { echo "$(_espvm_get_sdk_dir "$1")/.current"; }
 
 # ── Install manifest ──
@@ -376,33 +362,19 @@ _espvm_install_version() { _espvm_install_field "$1" "$2" 3; }
 
 _espvm_install_dir() {
     local d; d="$(_espvm_install_field "$1" "$2" 4 2>/dev/null)"
-    if [[ -n "$d" && -d "$d" ]]; then echo "$d"; else echo "$(_espvm_get_sdk_dir "$1")/$2"; fi
+    if [[ -n "$d" && -d "$d" ]]; then echo "$d"; return 0; fi
+    local wt; wt="$(_espvm_get_sdk_dir "$1")" || return 1
+    echo "$wt/$2"
 }
 
 _espvm_get_worktree_dir() {
-    _espvm_load_config
-    [[ -n "$ESPVM_WORKTREE_DIR" ]] && { echo "$ESPVM_WORKTREE_DIR"; return; }
-    echo "" >&2; _espvm_info "First-time setup: Where to store ESP SDK versions?" >&2
-    echo "  [1] ~/.espressif/versions (default)" >&2
-    echo "  [2] Custom path" >&2; echo "" >&2
-    local choice; choice="$(_espvm_prompt "Choice" "1")"
-    case "$choice" in
-        2)
-            local custom_path; custom_path="$(_espvm_prompt "Enter path:")"
-            custom_path="${custom_path/#\~/$HOME}"
-            [[ "$custom_path" == /* ]] || custom_path="$(cd "$custom_path" 2>/dev/null && pwd -P)" || {
-                _espvm_error "Error: Invalid path: $custom_path" >&2; return 1
-            }
-            if _espvm_is_system_path "$custom_path"; then
-                _espvm_error "Error: Cannot set worktree-dir to system path: $custom_path" >&2; return 1
-            fi
-            ESPVM_WORKTREE_DIR="$custom_path" ;;
-        *) ESPVM_WORKTREE_DIR="$HOME/.espressif/versions" ;;
-    esac
-    _espvm_save_config
-    _espvm_ok "Configuration saved to $ESPVM_CONFIG_FILE" >&2
-    echo "" >&2
-    echo "$ESPVM_WORKTREE_DIR"
+    # Config is loaded once at the espvm() entry, so this must not prompt or
+    # write — read-only commands (list/current) resolve through here. Fail hard
+    # on a non-absolute dir rather than leaking an empty/relative path into
+    # mkdir/rm/git worktree add.
+    local dir="${ESPVM_WORKTREE_DIR:-$HOME/.espressif/versions}"
+    [[ "$dir" == /* ]] || { _espvm_error "Error: worktree-dir must be absolute: $dir"; return 1; }
+    echo "$dir"
 }
 
 # ── SSH & Repository ──
@@ -426,7 +398,6 @@ _espvm_check_ssh() {
 _espvm_get_repo_url() {
     local sdk="$1"
     local sdk_repo="${_ESPVM_SDK_REPOS[$sdk]}"
-    _espvm_load_config
     local use_ssh="${ESPVM_USE_SSH:-auto}"
     if [[ "$use_ssh" == "auto" ]]; then
         _espvm_check_ssh && use_ssh="yes" || use_ssh="no"
@@ -629,8 +600,15 @@ _espvm_install() {
     local sdk_name="${_ESPVM_SDKS[$sdk]}"
     version="$(_espvm_resolve_version "$version")" || return 1
     local encoded_version="$(_espvm_encode_version "$version")"
-    local sdk_dir="${install_path:-$(_espvm_get_sdk_dir "$sdk")}"
-    [[ -n "$install_path" ]] && sdk_dir="$install_path/${_ESPVM_SDKS[$sdk]}"
+    local sdk_dir
+    if [[ -n "$install_path" ]]; then
+        [[ "$install_path" == /* ]] || install_path="$(cd "$install_path" 2>/dev/null && pwd -P)" || {
+            _espvm_error "Error: invalid --path: $install_path"; return 1; }
+        _espvm_is_system_path "$install_path" && { _espvm_error "Error: --path cannot be a system path: $install_path"; return 1; }
+        sdk_dir="$install_path/${_ESPVM_SDKS[$sdk]}"
+    else
+        sdk_dir="$(_espvm_get_sdk_dir "$sdk")" || return 1
+    fi
     local version_dir="$sdk_dir/$encoded_version"
 
     if [[ -d "$version_dir" ]]; then
@@ -1173,6 +1151,10 @@ espvm() {
     esac
 
     local cmd="$1"; shift 2>/dev/null || true
+
+    # Load config once per invocation. Read-only commands (list/current) must
+    # not prompt or write it; helpers read the resulting vars, not disk.
+    _espvm_load_config
 
     # Serialize all espvm invocations: the shared bare repositories, worktree
     # links, and the installs manifest are not safe for concurrent mutation.

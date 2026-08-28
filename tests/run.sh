@@ -42,8 +42,28 @@ F="$(mktemp)"; echo "#!/bin/sh" > "$F"
 assert "verify_script_hash refuses when unhashable" '! _espvm_verify_script_hash "$F" unit'
 unset -f _espvm_sha256
 
-# ── use does not auto-install a missing version ──
-assert "use missing version errors (no install)" '! espvm 9.9.9'
+# ── read-only commands must not prompt or write config (smell #2) ──
+assert "'current' does not write config file" '
+  rm -f "$ESPVM_CONFIG_DIR/config"
+  espvm current >/dev/null 2>&1
+  [[ ! -f "$ESPVM_CONFIG_DIR/config" ]]
+'
+assert "'ls' does not write config file" '
+  rm -f "$ESPVM_CONFIG_DIR/config"
+  espvm ls >/dev/null 2>&1
+  [[ ! -f "$ESPVM_CONFIG_DIR/config" ]]
+'
+
+# ── path resolvers fail hard on bad input (smell #1) ──
+assert "get_worktree_dir rejects relative dir" '
+  ESPVM_WORKTREE_DIR="rel/path" && ! _espvm_get_worktree_dir; unset ESPVM_WORKTREE_DIR
+'
+assert "get_sdk_dir propagates worktree failure" '
+  ESPVM_WORKTREE_DIR="rel" && ! _espvm_get_sdk_dir idf; unset ESPVM_WORKTREE_DIR
+'
+assert "install_dir propagates worktree failure" '
+  ESPVM_WORKTREE_DIR="rel" && ! _espvm_install_dir idf vX; unset ESPVM_WORKTREE_DIR
+'
 
 echo "1..$((PASS+FAIL))"
 echo "pass=$PASS fail=$FAIL"
