@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }} / ${{ matrix.shell }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        shell: [bash, zsh]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run smoke tests
+        run: ${{ matrix.shell }} tests/run.sh

@@ -1177,7 +1177,14 @@ espvm() {
     # Serialize all espvm invocations: the shared bare repositories, worktree
     # links, and the installs manifest are not safe for concurrent mutation.
     _espvm_lock "$_ESPVM_LOCK_DIR" || return 1
-    trap '_espvm_unlock' RETURN
+    _espvm_dispatch "$sdk" "$cmd" "$@"
+    local rc=$?
+    _espvm_unlock
+    return $rc
+}
+
+_espvm_dispatch() {
+    local sdk="$1" cmd="$2"; shift 2
 
     # Bare version args (v5.4.1, 5.4.1, release/v5.0) route to 'use'
     if [[ "$cmd" =~ ^v?[0-9] ]] || [[ "$cmd" =~ ^release[/-] ]]; then
@@ -1312,7 +1319,7 @@ _espvm_register_completion
 
 # Sourcing is the primary usage. Direct execution works for stateless
 # commands, but anything that must modify the shell environment is refused.
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]]; then
     _espvm_direct_first=""
     for _espvm_a in "$@"; do
         case "$_espvm_a" in
