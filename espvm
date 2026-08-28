@@ -457,12 +457,13 @@ _espvm_source_quiet() {
         source "$script"; local ret=$?; rm -f "$tmpfile"; return $ret
     else
         source "$script" > "$tmpfile" 2>&1; local ret=$?
-        if [[ $ret -ne 0 ]] || grep -qE "(FAILED|ERROR:)" "$tmpfile"; then
-            grep -E "(FAILED|error:|ERROR:|Error:)" "$tmpfile" | head -20
+        if [[ $ret -ne 0 ]]; then
+            _espvm_error "Failed to source $script (exit $ret):"
+            sed -n '1,40p' "$tmpfile" | sed 's/^/  /'
             _espvm_info "Run with -v or ESPVM_VERBOSE=1 for full output"
             rm -f "$tmpfile"; return 1
         fi
-        rm -f "$tmpfile"; return $ret
+        rm -f "$tmpfile"; return 0
     fi
 }
 
@@ -997,8 +998,21 @@ _espvm_status() {
 
 # ── Config ──
 
+_espvm_installs_exist() {
+    local installs="$ESPVM_CONFIG_DIR/installs"
+    [[ -s "$installs" ]] && return 0
+    local wt="${ESPVM_WORKTREE_DIR:-$HOME/.espressif/versions}" s d v
+    for s in idf matter; do
+        d="$wt/${_ESPVM_SDKS[$s]}"
+        [[ -d "$d" ]] || continue
+        for v in "$d"/*/; do [[ -d "$v" ]] && return 0; done
+    done
+    return 1
+}
+
 espvm_config() {
-    local action="$1" key="$2" value="$3"
+    local action="${1:-}" key="${2:-}" value="${3:-}" force=0 a
+    for a in "$@"; do [[ "$a" == "--force" ]] && force=1; done
     _espvm_load_config
     if [[ -z "$action" || "$action" == "show" ]]; then
         echo "espvm configuration:"
@@ -1026,12 +1040,18 @@ espvm_config() {
     if [[ "$action" == "set" ]]; then
         case "$key" in
             worktree-dir|worktree_dir|ESPVM_WORKTREE_DIR)
-                [[ -z "$value" ]] && { _espvm_error "Usage: espvm config set worktree-dir <path>"; return 1; }
+                [[ -z "$value" ]] && { _espvm_error "Usage: espvm config set worktree-dir <path> [--force]"; return 1; }
                 _espvm_validate_config_value "$value" || return 1
                 value="${value/#\~/$HOME}"
                 [[ "$value" == /* ]] || value="$(cd "$value" 2>/dev/null && pwd -P)" || { _espvm_error "Error: Invalid path: $value"; return 1; }
                 if _espvm_is_system_path "$value"; then
                     { _espvm_error "Error: Cannot set worktree-dir to system path: $value"; return 1; }
+                fi
+                if [[ $force -ne 1 ]] && _espvm_installs_exist; then
+                    _espvm_error "Error: installed SDKs exist under the current worktree-dir."
+                    _espvm_error "Changing it orphans them (bare repos stay; version dirs left behind)."
+                    _espvm_error "Remove them first (espvm rm <ver>) or pass --force to relocate config only."
+                    return 1
                 fi
                 ESPVM_WORKTREE_DIR="$value"; _espvm_save_config
                 _espvm_ok "worktree-dir set to: $ESPVM_WORKTREE_DIR" ;;
